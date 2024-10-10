@@ -38,9 +38,7 @@ let statusBarElem = getRequiredElementById('top_status_bar');
 
 /** Called when the user clicks the clear batch button. */
 function clearBatch() {
-    let currentImageBatchDiv = getRequiredElementById('current_image_batch');
-    currentImageBatchDiv.innerHTML = '';
-    currentImageBatchDiv.dataset.numImages = 0;
+    getRequiredElementById('current_image_batch').innerHTML = '';
 }
 
 /** Reference to the auto-clear-batch toggle checkbox. */
@@ -69,80 +67,32 @@ function toggleAutoLoadImages() {
 
 function clickImageInBatch(div) {
     let imgElem = div.getElementsByTagName('img')[0];
-    if (currentImgSrc == div.dataset.src) {
-        imageFullView.showImage(div.dataset.src, div.dataset.metadata);
-        return;
-    }
     setCurrentImage(div.dataset.src, div.dataset.metadata, div.dataset.batch_id ?? '', imgElem.dataset.previewGrow == 'true');
 }
 
-/** "Reuse Parameters" button impl. */
 function copy_current_image_params() {
     if (!currentMetadataVal) {
         alert('No parameters to copy!');
         return;
     }
-    let readable = interpretMetadata(currentMetadataVal);
-    let metadata = JSON.parse(readable).sui_image_params;
+    let metadata = JSON.parse(currentMetadataVal).sui_image_params;
     if ('original_prompt' in metadata) {
         metadata.prompt = metadata.original_prompt;
     }
     if ('original_negativeprompt' in metadata) {
         metadata.negativeprompt = metadata.original_negativeprompt;
     }
-    // Special hacks to repair edge cases in LoRA reuse
-    // There should probably just be a direct "for lora in list, set lora X with weight Y" instead of this
-    if ('lorasectionconfinement' in metadata && 'loras' in metadata && 'loraweights' in metadata) {
-        let confinements = metadata.lorasectionconfinement;
-        let loras = metadata.loras;
-        let weights = metadata.loraweights;
-        if (confinements.length == loras.length && loras.length == weights.length) {
-            let newLoras = [];
-            let newWeights = [];
-            for (let i = 0; i < confinements.length; i++) {
-                if (confinements[i] == -1) {
-                    newLoras.push(loras[i]);
-                    newWeights.push(weights[i]);
-                }
-            }
-            metadata.loras = newLoras;
-            metadata.loraweights = newWeights;
-            delete metadata.lorasectionconfinement;
-        }
-    }
-    if ('loras' in metadata && 'loraweights' in metadata && document.getElementById('input_loras') && metadata.loras.length == metadata.loraweights.length) {
-        let loraElem = getRequiredElementById('input_loras');
-        for (let val of metadata.loras) {
-            if (val && !$(loraElem).find(`option[value="${val}"]`).length) {
-                $(loraElem).append(new Option(val, val, false, false));
-            }
-        }
-        let valSet = [...loraElem.options].map(option => option.value);
-        let newLoras = [];
-        let newWeights = [];
-        for (let val of valSet) {
-            let index = metadata.loras.indexOf(val);
-            if (index != -1) {
-                newLoras.push(metadata.loras[index]);
-                newWeights.push(metadata.loraweights[index]);
-            }
-        }
-        metadata.loras = newLoras;
-        metadata.loraweights = newWeights;
-    }
-    if (!('aspectratio' in metadata) && 'width' in metadata && 'height' in metadata) {
-        metadata.aspectratio = 'Custom';
-    }
     let exclude = getUserSetting('reuseparamexcludelist').split(',').map(s => cleanParamName(s));
     resetParamsToDefault(exclude);
     for (let param of gen_param_types) {
-        if (param.nonreusable || exclude.includes(param.id)) {
-            continue;
-        }
         let elem = document.getElementById(`input_${param.id}`);
-        let val = metadata[param.id];
-        if (elem && val !== undefined && val !== null && val !== '') {
-            setDirectParamValue(param, val);
+        if (elem && metadata[param.id] && !exclude.includes(param.id)) {
+            setDirectParamValue(param, metadata[param.id]);
+            if (param.toggleable && param.visible) {
+                let toggle = getRequiredElementById(`input_${param.id}_toggle`);
+                toggle.checked = true;
+                doToggleEnable(elem.id);
+            }
             if (param.group && param.group.toggles) {
                 let toggle = getRequiredElementById(`input_group_content_${param.group.id}_toggle`);
                 if (!toggle.checked) {
@@ -167,11 +117,7 @@ function formatMetadata(metadata) {
     }
     let data;
     try {
-        let readable = interpretMetadata(metadata);
-        if (!readable) {
-            return '';
-        }
-        data = JSON.parse(readable).sui_image_params;
+        data = JSON.parse(metadata).sui_image_params;
     }
     catch (e) {
         console.log(`Error parsing metadata '${metadata}': ${e}`);
@@ -182,22 +128,18 @@ function formatMetadata(metadata) {
         if (obj) {
             for (let key of Object.keys(obj)) {
                 let val = obj[key];
-                if (val !== null && val !== '') { // According to javascript, 0 == '', so have to === to block that. Argh.
+                if (val) {
                     for (let cleaner of metadataKeyFormatCleaners) {
                         key = cleaner(key);
                     }
                     let hash = Math.abs(hashCode(key.toLowerCase().replaceAll(' ', '').replaceAll('_', ''))) % 10;
-                    let added = '';
-                    if (key.includes('model') || key.includes('lora') || key.includes('embedding')) {
-                        added += ' param_view_block_model';
-                    }
                     if (typeof val == 'object') {
-                        result += `<span class="param_view_block tag-text tag-type-${hash}${added}"><span class="param_view_name">${escapeHtml(key)}</span>: `;
+                        result += `<span class="param_view_block tag-text tag-type-${hash}"><span class="param_view_name">${escapeHtml(key)}</span>: `;
                         appendObject(val);
                         result += `</span>, `;
                     }
                     else {
-                        result += `<span class="param_view_block tag-text tag-type-${hash}${added}"><span class="param_view_name">${escapeHtml(key)}</span>: <span class="param_view tag-text-soft tag-type-${hash}">${escapeHtml(`${val}`)}</span></span>, `;
+                        result += `<span class="param_view_block tag-text tag-type-${hash}"><span class="param_view_name">${escapeHtml(key)}</span>: <span class="param_view tag-text-soft tag-type-${hash}">${escapeHtml(`${val}`)}</span></span>, `;
                     }
                 }
             }
@@ -255,9 +197,6 @@ class ImageFullViewHelper {
 
     onMouseDown(e) {
         if (this.modal.style.display != 'block') {
-            return;
-        }
-        if (e.button == 2) { // right-click
             return;
         }
         this.lastMouseX = e.clientX;
@@ -467,6 +406,16 @@ window.addEventListener('keydown', function(kbevent) {
     else if ((kbevent.key == 'ArrowRight' || kbevent.key == 'ArrowDown') && (isFullView || isCurImgFocused)) {
         shiftToNextImagePreview(true, isFullView);
     }
+    else if (kbevent.key === "Enter" && kbevent.ctrlKey && kbevent.shiftKey && isVisible(getRequiredElementById('main_image_area'))) {
+        for (let i = 0; i < 10; i++) {
+	    getRequiredElementById('alt_generate_button').click();
+	}
+    }
+    else if (kbevent.key === "Enter" && kbevent.ctrlKey && kbevent.altKey && isVisible(getRequiredElementById('main_image_area'))) {
+        for (let i = 0; i < 50; i++) {
+	    getRequiredElementById('alt_generate_button').click();
+	}
+    }
     else if (kbevent.key === "Enter" && kbevent.ctrlKey && isVisible(getRequiredElementById('main_image_area'))) {
         getRequiredElementById('alt_generate_button').click();
     }
@@ -536,24 +485,14 @@ function toggleStar(path, rawSrc) {
     });
 }
 
-function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, smoothAdd = false, canReparse = true) {
+function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, smoothAdd = false) {
     currentImgSrc = src;
-    if (metadata) {
-        metadata = interpretMetadata(metadata);
-    }
     currentMetadataVal = metadata;
-    if ((smoothAdd || !metadata) && canReparse) {
+    if (smoothAdd) {
         let image = new Image();
         image.src = src;
         image.onload = () => {
-            if (!metadata) {
-                parseMetadata(image, (data, parsedMetadata) => {
-                    setCurrentImage(src, parsedMetadata, batchId, previewGrow, false, false);
-                });
-            }
-            else {
-                setCurrentImage(src, metadata, batchId, previewGrow, false, false);
-            }
+            setCurrentImage(src, metadata, batchId, previewGrow);
         };
         return;
     }
@@ -630,26 +569,7 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, 
             imagePathClean = imagePathClean.substring(firstSlash + 1);
         }
     }
-    let buttonsChoice = getUserSetting('ButtonsUnderMainImages', '');
-    if (buttonsChoice == '')
-    {
-        buttonsChoice = 'Use As Init,Edit Image,Star,Reuse Parameters';
-    }
-    buttonsChoice = buttonsChoice.toLowerCase().replaceAll(' ', '').split(',');
-    let subButtons = [];
-    function includeButton(name, action, extraClass = '', title = '') {
-        let checkName = name.toLowerCase().replaceAll(' ', '');
-        if (checkName == 'starred') {
-            checkName = 'star';
-        }
-        if (buttonsChoice.includes(checkName)) {
-            quickAppendButton(buttons, name, (e, button) => action(button), extraClass, title);
-        }
-        else {
-            subButtons.push({ key: name, action: action });
-        }
-    }
-    includeButton('Use As Init', () => {
+    quickAppendButton(buttons, 'Use As Init', () => {
         let initImageParam = document.getElementById('input_initimage');
         if (initImageParam) {
             let tmpImg = new Image();
@@ -661,8 +581,7 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, 
                 let ctx = canvas.getContext('2d');
                 ctx.drawImage(tmpImg, 0, 0);
                 canvas.toBlob(blob => {
-                    let type = img.src.substring(img.src.lastIndexOf('.') + 1);
-                    let file = new File([blob], imagePathClean, { type: `image/${type.length > 0 && type.length < 20 ? type : 'png'}` });
+                    let file = new File([blob], imagePathClean, { type: img.src.substring(img.src.lastIndexOf('.') + 1) });
                     let container = new DataTransfer(); 
                     container.items.add(file);
                     initImageParam.files = container.files;
@@ -676,96 +595,50 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, 
             tmpImg.src = img.src;
         }
     }, '', 'Sets this image as the Init Image parameter input');
-    includeButton('Edit Image', () => {
-        let initImageGroupToggle = document.getElementById('input_group_content_initimage_toggle');
+    quickAppendButton(buttons, 'Edit Image', () => {
+        let initImageGroupToggle = getRequiredElementById('input_group_content_initimage_toggle');
         if (initImageGroupToggle) {
             initImageGroupToggle.checked = true;
             triggerChangeFor(initImageGroupToggle);
         }
-        let initImageParam = document.getElementById('input_initimage');
-        if (!initImageParam) {
-            showError('Cannot use "Edit Image": Init Image parameter not found\nIf you have a custom workflow, deactivate it, or add an Init Image parameter.');
-            return;
-        }
         imageEditor.setBaseImage(img);
         imageEditor.activate();
     }, '', 'Opens an Image Editor for this image');
-    includeButton('Upscale 2x', () => {
+    quickAppendButton(buttons, 'Upscale 2x', () => {
         toDataURL(img.src, (url => {
             let [width, height] = naturalDim();
             let input_overrides = {
                 'initimage': url,
-                'images': 1,
-                'aspectratio': 'Custom',
                 'width': width * 2,
                 'height': height * 2
             };
-            mainGenHandler.doGenerate(input_overrides, { 'initimagecreativity': 0.4 });
+            mainGenHandler.doGenerate(input_overrides, { 'initimagecreativity': 0.6 });
         }));
     }, '', 'Runs an instant generation with this image as the input and scale doubled');
-    includeButton('Refine Image', () => {
-        toDataURL(img.src, (url => {
-            let input_overrides = {
-                'initimage': url,
-                'initimagecreativity': 0,
-                'images': 1
-            };
-            if (currentMetadataVal) {
-                let readable = interpretMetadata(currentMetadataVal);
-                let metadata = readable ? JSON.parse(readable).sui_image_params : {};
-                if ('seed' in metadata) {
-                    input_overrides['seed'] = metadata.seed;
-                }
-            }
-            let togglerInit = getRequiredElementById('input_group_content_initimage_toggle');
-            let togglerRefine = getRequiredElementById('input_group_content_refineupscale_toggle');
-            let togglerInitOriginal = togglerInit.checked;
-            let togglerRefineOriginal = togglerRefine.checked;
-            togglerInit.checked = false;
-            togglerRefine.checked = true;
-            triggerChangeFor(togglerInit);
-            triggerChangeFor(togglerRefine);
-            mainGenHandler.doGenerate(input_overrides);
-            togglerInit.checked = togglerInitOriginal;
-            togglerRefine.checked = togglerRefineOriginal;
-            triggerChangeFor(togglerInit);
-            triggerChangeFor(togglerRefine);
-        }));
-    }, '', 'Runs an instant generation with Refine / Upscale turned on');
-    let metaParsed = { is_starred: false };
-    if (metadata) {
-        try {
-            metaParsed = JSON.parse(metadata) || metaParsed;
-        }
-        catch (e) {
-            console.log(`Error parsing metadata for image: '${e}', metadata was '${metadata}'`);
-        }
-    }
-    includeButton(metaParsed.is_starred ? 'Starred' : 'Star', (e, button) => {
+    let metaParsed = JSON.parse(metadata) ?? { is_starred: false };
+    quickAppendButton(buttons, metaParsed.is_starred ? 'Starred' : 'Star', (e, button) => {
         toggleStar(imagePathClean, src);
     }, (metaParsed.is_starred ? ' star-button button-starred-image' : ' star-button'), 'Toggles this image as starred - starred images get moved to a separate folder and highlighted');
-    includeButton('Reuse Parameters', copy_current_image_params, '', 'Copies the parameters used to generate this image to the current generation settings');
-    includeButton('View In History', () => {
-        let folder = imagePathClean;
-        let lastSlash = folder.lastIndexOf('/');
-        if (lastSlash != -1) {
-            folder = folder.substring(0, lastSlash);
-        }
-        getRequiredElementById('imagehistorytabclickable').click();
-        imageHistoryBrowser.navigate(folder);
-    }, '', 'Jumps the Image History browser to where this image is at.');
-    for (let added of buttonsForImage(imagePathClean, src)) {
-        if (added.label == 'Star') {
-            continue;
-        }
-        if (added.href) {
-            subButtons.push({ key: added.label, href: added.href, is_download: added.is_download });
-        }
-        else {
-            includeButton(added.label, added.onclick, '', '');
-        }
-    }
+    quickAppendButton(buttons, 'Reuse Parameters', copy_current_image_params, '', 'Copies the parameters used to generate this image to the current generation settings');
     quickAppendButton(buttons, 'More &#x2B9F;', (e, button) => {
+        let subButtons = [];
+        for (let added of buttonsForImage(imagePathClean, src)) {
+            if (added.href) {
+                subButtons.push({ key: added.label, href: added.href, is_download: added.is_download });
+            }
+            else {
+                subButtons.push({ key: added.label, action: added.onclick });
+            }
+        }
+        subButtons.push({ key: 'View In History', action: () => {
+            let folder = imagePathClean;
+            let lastSlash = folder.lastIndexOf('/');
+            if (lastSlash != -1) {
+                folder = folder.substring(0, lastSlash);
+            }
+            getRequiredElementById('imagehistorytabclickable').click();
+            imageHistoryBrowser.navigate(folder);
+        } });
         let rect = button.getBoundingClientRect();
         new AdvancedPopover('image_more_popover', subButtons, false, rect.x, rect.y + button.offsetHeight + 6, document.body, null);
 
@@ -784,16 +657,15 @@ function appendImage(container, imageSrc, batchId, textPreview, metadata = '', t
     if (typeof container == 'string') {
         container = getRequiredElementById(container);
     }
-    container.dataset.numImages = (container.dataset.numImages ?? 0) + 1;
-    let div = createDiv(null, `image-block image-block-${type} image-batch-${batchId == "folder" ? "folder" : (container.dataset.numImages % 2 ? "1" : "0")}`);
+    let div = createDiv(null, `image-block image-block-${type} image-batch-${batchId == "folder" ? "folder" : (batchId % 2)}`);
     div.dataset.batch_id = batchId;
     div.dataset.preview_text = textPreview;
     div.dataset.src = imageSrc;
     div.dataset.metadata = metadata;
     let img = document.createElement('img');
     img.addEventListener('load', () => {
+        let ratio = img.naturalWidth / img.naturalHeight;
         if (batchId != "folder") {
-            let ratio = img.naturalWidth / img.naturalHeight;
             div.style.width = `calc(${roundToStr(ratio * 10, 2)}rem + 2px)`;
         }
     });
@@ -841,12 +713,6 @@ function gotImagePreview(image, metadata, batchId) {
     return batch_div;
 }
 
-let originalPageTitle = document.title;
-
-let generatingPreviewsText = translatable('Generating live previews...');
-let waitingOnModelLoadText = translatable('waiting on model load');
-let generatingText = translatable('generating');
-
 function updateCurrentStatusDirect(data) {
     if (data) {
         num_current_gens = data.waiting_gens;
@@ -876,9 +742,7 @@ function updateCurrentStatusDirect(data) {
         let estTime = avgGenTime * total;
         timeEstimate = ` (est. ${durationStringify(estTime)})`;
     }
-    elem.innerHTML = total == 0 ? (isGeneratingPreviews ? translatableText.get() : '') : `${autoBlock(num_current_gens, 'current generation%')}${autoBlock(num_live_gens, 'running')}${autoBlock(num_backends_waiting, 'queued')}${autoBlock(num_models_loading, waitingOnModelLoadText.get())} ${timeEstimate}...`;
-    let max = Math.max(num_current_gens, num_models_loading, num_live_gens, num_backends_waiting);
-    document.title = total == 0 ? originalPageTitle : `(${max} ${generatingText.get()}) ${originalPageTitle}`;
+    elem.innerHTML = total == 0 ? (isGeneratingPreviews ? 'Generating live previews...' : '') : `${autoBlock(num_current_gens, 'current generation%')}${autoBlock(num_live_gens, 'running')}${autoBlock(num_backends_waiting, 'queued')}${autoBlock(num_models_loading, 'waiting on model load')} ${timeEstimate}...`;
 }
 
 let doesHaveGenCountUpdateQueued = false;
@@ -917,8 +781,8 @@ let genForeverInterval, genPreviewsInterval;
 
 let lastGenForeverParams = null;
 
-function doGenForeverOnce(minQueueSize) {
-    if (num_current_gens >= minQueueSize) {
+function doGenForeverOnce() {
+    if (num_current_gens > 0) {
         return;
     }
     let allParams = getGenInput();
@@ -937,10 +801,9 @@ function toggleGenerateForever() {
     if (isGeneratingForever) {
         button.innerText = 'Stop Generating';
         let delaySeconds = parseFloat(getUserSetting('generateforeverdelay', '0.1'));
-        let minQueueSize = Math.max(1, parseInt(getUserSetting('generateforeverqueuesize', '1')));
         let delayMs = Math.max(parseInt(delaySeconds * 1000), 1);
         genForeverInterval = setInterval(() => {
-            doGenForeverOnce(minQueueSize);
+            doGenForeverOnce();
         }, delayMs);
     }
     else {
@@ -1091,12 +954,6 @@ function listImageHistoryFolderAndFiles(path, isRefresh, callback, depth) {
     let prefix = path == '' ? '' : (path.endsWith('/') ? path : `${path}/`);
     genericRequest('ListImages', {'path': path, 'depth': depth, 'sortBy': sortBy, 'sortReverse': reverse}, data => {
         let folders = data.folders.sort((a, b) => b.toLowerCase().localeCompare(a.toLowerCase()));
-        function isPreSortFile(f) {
-            return f.src == 'index.html'; // Grid index files
-        }
-        let preFiles = data.files.filter(f => isPreSortFile(f));
-        let postFiles = data.files.filter(f => !isPreSortFile(f));
-        data.files = preFiles.concat(postFiles);
         let mapped = data.files.map(f => {
             let fullSrc = `${prefix}${f.src}`;
             return { 'name': fullSrc, 'data': { 'src': `${getImageOutPrefix()}/${fullSrc}`, 'fullsrc': fullSrc, 'name': f.src, 'metadata': f.metadata } };
@@ -1140,10 +997,6 @@ function buttonsForImage(fullsrc, src) {
                         if (div) {
                             div.remove();
                         }
-                        div = getRequiredElementById('current_image_batch').querySelector(`.image-block[data-src="${src}"]`);
-                        if (div) {
-                            div.remove();
-                        }
                     }
                     let currentImage = document.getElementById('current_image_img');
                     if (currentImage && currentImage.dataset.src == src) {
@@ -1152,39 +1005,35 @@ function buttonsForImage(fullsrc, src) {
                 });
             }
         }
-    ];
+    ];;
 }
 
 function describeImage(image) {
     let buttons = buttonsForImage(image.data.fullsrc, image.data.src);
     let parsedMeta = { is_starred: false };
     if (image.data.metadata) {
-        let metadata = image.data.metadata;
         try {
-            metadata = interpretMetadata(image.data.metadata);
-            parsedMeta = JSON.parse(metadata) || parsedMeta;
+            parsedMeta = JSON.parse(image.data.metadata);
         }
         catch (e) {
-            console.log(`Failed to parse image metadata: ${e}, metadata was ${metadata}`);
+            console.log(`Failed to parse image metadata: ${e}`);
         }
     }
     let description = image.data.name + "\n" + formatMetadata(image.data.metadata);
     let name = image.data.name;
-    let dragImage = image.data.src.endsWith('.html') ? 'imgs/html.jpg' : `${image.data.src}`;
     let imageSrc = image.data.src.endsWith('.html') ? 'imgs/html.jpg' : `${image.data.src}?preview=true`;
     let searchable = description;
-    return { name, description, buttons, 'image': imageSrc, 'dragimage': dragImage, className: parsedMeta.is_starred ? 'image-block-starred' : '', searchable, display: name };
+    return { name, description, buttons, 'image': imageSrc, className: parsedMeta.is_starred ? 'image-block-starred' : '', searchable };
 }
 
 function selectImageInHistory(image, div) {
-    lastHistoryImage = image.data.src;
-    lastHistoryImageDiv = div;
     let curImg = document.getElementById('current_image_img');
     if (curImg && curImg.dataset.src == image.data.src) {
-        curImg.dataset.batch_id = 'history';
         curImg.click();
         return;
     }
+    lastHistoryImage = image.data.src;
+    lastHistoryImageDiv = div;
     if (image.data.name.endsWith('.html')) {
         window.open(image.data.src, '_blank');
     }
@@ -1265,12 +1114,6 @@ function reviseBackendFeatureSet() {
     }
     else {
         removeMe.push('sd3');
-    }
-    if (curModelArch == 'Flux.1-dev') {
-        addMe.push('flux-dev');
-    }
-    else {
-        removeMe.push('flux-dev');
     }
     let anyChanged = false;
     for (let add of addMe) {
@@ -1409,27 +1252,11 @@ function resetPageSizer() {
     }
 }
 
-function tweakNegativePromptBox() {
-    let altNegText = getRequiredElementById('alt_negativeprompt_textbox');
-    let cfgScale = document.getElementById('input_cfgscale');
-    let cfgScaleVal = cfgScale ? parseFloat(cfgScale.value) : 7;
-    if (cfgScaleVal == 1) {
-        altNegText.classList.add('alt-negativeprompt-textbox-invalid');
-        altNegText.placeholder = translate(`Negative Prompt is not available when CFG Scale is 1`);
-    }
-    else {
-        altNegText.classList.remove('alt-negativeprompt-textbox-invalid');
-        altNegText.placeholder = translate(`Optionally, type a negative prompt here...`);
-    }
-    altNegText.title = altNegText.placeholder;
-}
-
 function pageSizer() {
     let topSplit = getRequiredElementById('t2i-top-split-bar');
     let topSplit2 = getRequiredElementById('t2i-top-2nd-split-bar');
     let midSplit = getRequiredElementById('t2i-mid-split-bar');
     let topBar = getRequiredElementById('t2i_top_bar');
-    let bottomInfoBar = getRequiredElementById('bottom_info_bar');
     let bottomBarContent = getRequiredElementById('t2i_bottom_bar_content');
     let inputSidebar = getRequiredElementById('input_sidebar');
     let mainInputsAreaWrapper = getRequiredElementById('main_inputs_area_wrapper');
@@ -1450,12 +1277,11 @@ function pageSizer() {
     let imageEditorSizeBarDrag = false;
     let isSmallWindow = window.innerWidth < 768 || window.innerHeight < 768;
     function setPageBars() {
-        tweakNegativePromptBox();
         if (altRegion.style.display != 'none') {
             altText.style.height = 'auto';
-            altText.style.height = `calc(min(15rem, ${Math.max(altText.scrollHeight, 15) + 5}px))`;
+            altText.style.height = `${Math.max(altText.scrollHeight, 15) + 5}px`;
             altNegText.style.height = 'auto';
-            altNegText.style.height = `calc(min(15rem, ${Math.max(altNegText.scrollHeight, 15) + 5}px))`;
+            altNegText.style.height = `${Math.max(altNegText.scrollHeight, 15) + 5}px`;
             altRegion.style.top = `calc(-${altText.offsetHeight + altNegText.offsetHeight + altImageRegion.offsetHeight}px - 2rem)`;
         }
         setCookie('barspot_pageBarTop', pageBarTop, 365);
@@ -1509,8 +1335,7 @@ function pageSizer() {
             editorSizebar.style.height = `calc(100vh - ${fixed} - ${altHeight})`;
             currentImageBatch.style.height = `calc(100vh - ${fixed})`;
             topBar.style.height = `calc(100vh - ${fixed})`;
-            let bottomBarHeight = bottomInfoBar.offsetHeight;
-            bottomBarContent.style.height = `calc(${fixed} - ${bottomBarHeight}px)`;
+            bottomBarContent.style.height = `calc(${fixed} - 2rem)`;
         }
         else {
             topSplit.style.height = '';
@@ -1670,15 +1495,6 @@ function pageSizer() {
             return false;
         }
     });
-    altNegText.addEventListener('keydown', (e) => {
-        if (e.key == 'Enter' && !e.shiftKey) {
-            altNegText.dispatchEvent(new Event('change'));
-            getRequiredElementById('alt_generate_button').click();
-            e.preventDefault();
-            e.stopPropagation();
-            return false;
-        }
-    });
     altText.addEventListener('input', (e) => {
         let inputPrompt = document.getElementById('input_prompt');
         if (inputPrompt) {
@@ -1729,7 +1545,7 @@ function pageSizer() {
 /** Clears out and resets the image-batch view, only if the user wants that. */
 function resetBatchIfNeeded() {
     if (autoClearBatchElem.checked) {
-        clearBatch();
+        getRequiredElementById('current_image_batch').innerHTML = '';
     }
 }
 
@@ -1740,19 +1556,9 @@ function loadUserData(callback) {
             let allSet = [];
             autoCompletionsList['all'] = allSet;
             for (let val of data.autocompletions) {
-                let split = val.split('\n');
+                let split = val.split(',');
                 let datalist = autoCompletionsList[val[0]];
-                let entry = { name: split[0], low: split[1].replaceAll(' ', '_').toLowerCase(), clean: split[1], raw: val, count: 0 };
-                if (split.length > 3) {
-                    entry.tag = split[2];
-                }
-                if (split.length > 4) {
-                    count = parseInt(split[3]) || 0;
-                    if (count) {
-                        entry.count = count;
-                        entry.count_display = largeCountStringify(count);
-                    }
-                }
+                let entry = { low: split[0].toLowerCase(), raw: val };
                 if (!datalist) {
                     datalist = [];
                     autoCompletionsList[val[0]] = datalist;
@@ -1803,10 +1609,9 @@ function updateAllModels(models) {
     }
     selector.value = selectorVal;
     pickle2safetensor_load();
-    modelDownloader.reloadFolders();
 }
 
-let shutdownConfirmationText = translatable("Are you sure you want to shut SwarmUI down?");
+let shutdownConfirmationText = translatable("Are you sure you want to shut StableSwarmUI down?");
 
 function shutdown_server() {
     if (confirm(shutdownConfirmationText.get())) {
@@ -1816,7 +1621,7 @@ function shutdown_server() {
     }
 }
 
-let restartConfirmationText = translatable("Are you sure you want to update and restart SwarmUI?");
+let restartConfirmationText = translatable("Are you sure you want to update and restart StableSwarmUI?");
 let checkingForUpdatesText = translatable("Checking for updates...");
 
 function update_and_restart_server() {
@@ -1850,7 +1655,7 @@ function setTitles() {
 }
 setTitles();
 
-function doFeatureInstaller(path, author, name, button_div_id, alt_confirm = null, callback = null, deleteButton = true) {
+function doFeatureInstaller(path, author, name, button_div_id, alt_confirm = null, callback = null) {
     if (!confirm(alt_confirm || `This will install ${path} which is a third-party extension maintained by community developer '${author}'.\nWe cannot make any guarantees about it.\nDo you wish to install?`)) {
         return;
     }
@@ -1861,9 +1666,7 @@ function doFeatureInstaller(path, author, name, button_div_id, alt_confirm = nul
         buttonDiv.appendChild(createDiv('', null, "Installed! Please wait while backends restart. If it doesn't work, you may need to restart Swarm."));
         reviseStatusBar();
         setTimeout(() => {
-            if (deleteButton) {
-                buttonDiv.remove();
-            }
+            buttonDiv.remove();
             hasAppliedFirstRun = false;
             reviseStatusBar();
             if (callback) {
@@ -1894,24 +1697,6 @@ function installTensorRT() {
         getRequiredElementById('tensorrt_mustinstall').style.display = 'none';
         getRequiredElementById('tensorrt_modal_ready').style.display = '';
     });
-}
-
-function installSAM2() {
-    doFeatureInstaller('https://github.com/kijai/ComfyUI-segment-anything-2', 'kijai', 'sam2', 'install_sam2_button', null, () => {
-        $('#sam2_installer').modal('hide');
-    }, false);
-}
-
-function installBNBNF4() {
-    doFeatureInstaller('https://github.com/comfyanonymous/ComfyUI_bitsandbytes_NF4', 'comfyanonymous', 'bnb_nf4', 'install_bnbnf4_button', `This will install BnB NF4 support developed by Comfy and lllyasviel (AGPL License).\nDo you wish to install?`, () => {
-        $('#bnb_nf4_installer').modal('hide');
-    }, false);
-}
-
-function installGGUF() {
-    doFeatureInstaller('https://github.com/city96/ComfyUI-GGUF', 'city96', 'gguf', 'install_gguf_button', `This will install GGUF support developed by city96.\nDo you wish to install?`, () => {
-        $('#gguf_installer').modal('hide');
-    }, false);
 }
 
 function hideRevisionInputs() {
@@ -1959,24 +1744,14 @@ function revisionAddImage(file) {
     let reader = new FileReader();
     reader.onload = (e) => {
         let data = e.target.result;
-        let imageContainer = createDiv(null, 'alt-prompt-image-container');
-        let imageRemoveButton = createSpan(null, 'alt-prompt-image-container-remove-button', '&times;');
-        imageRemoveButton.addEventListener('click', (e) => {
-            imageContainer.remove();
-            autoRevealRevision();
-            altPromptSizeHandleFunc();
-        });
-        imageRemoveButton.title = 'Remove this image';
-        imageContainer.appendChild(imageRemoveButton);
         let imageObject = new Image();
         imageObject.src = data;
         imageObject.height = 128;
         imageObject.className = 'alt-prompt-image';
         imageObject.dataset.filedata = data;
-        imageContainer.appendChild(imageObject);
         clearButton.style.display = '';
         showRevisionInputs(true);
-        promptImageArea.appendChild(imageContainer);
+        promptImageArea.appendChild(imageObject);
         altPromptSizeHandleFunc();
     };
     reader.readAsDataURL(file);
@@ -2036,43 +1811,25 @@ function openEmptyEditor() {
 
 function upvertAutoWebuiMetadataToSwarm(metadata) {
     let realData = {};
-    // Auto webui has no "proper formal" syntax like JSON or anything,
-    // just a mishmash of text, and there's no way to necessarily predict newlines/colons/etc,
-    // so just make best effort to import based on some easy examples
-    if (metadata.includes("\nNegative prompt: ")) {
-        let parts = metadata.split("\nNegative prompt: ", 2);
-        realData['prompt'] = parts[0];
-        let subSplit = parts[1].split("\n", 2);
-        realData['negativeprompt'] = subSplit[0];
-        metadata = subSplit[1];
-    }
-    else {
-        let lines = metadata.split('\n');
-        realData['prompt'] = lines.slice(0, lines.length - 1).join('\n');
-        metadata = lines[lines.length - 1];
-    }
-    let lines = metadata.split('\n');
-    if (lines.length > 0) {
-        let dataParts = lines[lines.length - 1].split(',').map(x => x.split(':').map(y => y.trim()));
-        for (let part of dataParts) {
-            if (part.length == 2) {
-                let clean = cleanParamName(part[0]);
-                if (rawGenParamTypesFromServer.find(x => x.id == clean)) {
-                    realData[clean] = part[1];
+    [realData['prompt'], remains] = metadata.split("\nNegative prompt: ");
+    let lines = remains.split('\n');
+    realData['negativeprompt'] = lines.slice(0, -1).join('\n');
+    let dataParts = lines[lines.length - 1].split(',').map(x => x.split(':').map(y => y.trim()));
+    for (let part of dataParts) {
+        if (part.length == 2) {
+            let clean = cleanParamName(part[0]);
+            if (rawGenParamTypesFromServer.find(x => x.id == clean)) {
+                realData[clean] = part[1];
+            }
+            else if (clean == "size") {
+                let sizeParts = part[1].split('x').map(x => parseInt(x));
+                if (sizeParts.length == 2) {
+                    realData['width'] = sizeParts[0];
+                    realData['height'] = sizeParts[1];
                 }
-                else if (clean == "size") {
-                    let sizeParts = part[1].split('x').map(x => parseInt(x));
-                    if (sizeParts.length == 2) {
-                        realData['width'] = sizeParts[0];
-                        realData['height'] = sizeParts[1];
-                    }
-                }
-                else if (clean == "scheduletype") {
-                    realData["scheduler"] = part[1].toLowerCase();
-                }
-                else {
-                    realData[part[0]] = part[1];
-                }
+            }
+            else {
+                realData[part[0]] = part[1];
             }
         }
     }
@@ -2105,92 +1862,6 @@ function remapMetadataKeys(metadata, keymap) {
 
 const imageMetadataKeys = ['prompt', 'Prompt', 'parameters', 'Parameters', 'userComment', 'UserComment', 'model', 'Model'];
 
-function interpretMetadata(metadata) {
-    if (metadata instanceof Uint8Array) {
-        let prefix = metadata.slice(0, 8);
-        let data = metadata.slice(8);
-        let encodeType = new TextDecoder().decode(prefix);
-        if (encodeType.startsWith('UNICODE')) {
-            if (data[0] == 0 && data[1] != 0) { // This is slightly dirty detection, but it works at least for English text.
-                metadata = decodeUtf16LE(data);
-            }
-            else {
-                metadata = decodeUtf16(data);
-            }
-        }
-        else {
-            metadata = new TextDecoder().decode(data);
-        }
-    }
-    if (metadata) {
-        metadata = metadata.trim();
-        if (metadata.startsWith('{')) {
-            let json = JSON.parse(metadata);
-            if ('sui_image_params' in json) {
-                // It's swarm, we're good
-            }
-            else if ("Prompt" in json) {
-                // Fooocus
-                json = remapMetadataKeys(json, fooocusMetadataMap);
-                metadata = JSON.stringify({ 'sui_image_params': json });
-            }
-            else {
-                // Don't know - discard for now.
-                metadata = null;
-            }
-        }
-        else {
-            let lines = metadata.split('\n');
-            if (lines.length > 1) {
-                metadata = upvertAutoWebuiMetadataToSwarm(metadata);
-            }
-            else {
-                // ???
-                metadata = null;
-            }
-        }
-    }
-    return metadata;
-}
-
-function parseMetadata(data, callback) {
-    exifr.parse(data).then(parsed => {
-        if (parsed && imageMetadataKeys.some(key => key in parsed)) {
-            return parsed;
-        }
-        return exifr.parse(data, imageMetadataKeys);
-    }).then(parsed => {
-        let metadata = null;
-        if (parsed) {
-            if (parsed.parameters) {
-                metadata = parsed.parameters;
-            }
-            else if (parsed.Parameters) {
-                metadata = parsed.Parameters;
-            }
-            else if (parsed.prompt) {
-                metadata = parsed.prompt;
-            }
-            else if (parsed.UserComment) {
-                metadata = parsed.UserComment;
-            }
-            else if (parsed.userComment) {
-                metadata = parsed.userComment;
-            }
-            else if (parsed.model) {
-                metadata = parsed.model;
-            }
-            else if (parsed.Model) {
-                metadata = parsed.Model;
-            }
-        }
-        metadata = interpretMetadata(metadata);
-        callback(data, metadata);
-    }).catch(err => {
-        callback(data, null);
-    });
-}
-
 function imageInputHandler() {
     let imageArea = getRequiredElementById('current_image');
     imageArea.addEventListener('dragover', (e) => {
@@ -2204,9 +1875,80 @@ function imageInputHandler() {
             let file = e.dataTransfer.files[0];
             if (file.type.startsWith('image/')) {
                 let reader = new FileReader();
+                parsemetadata = (e) => {
+                    let data = e.target.result;
+                    exifr.parse(data).then(parsed => {
+                        if (parsed && imageMetadataKeys.some(key => key in parsed)) {
+                            return parsed;
+                        }
+                        return exifr.parse(data, imageMetadataKeys);
+                    }).then(parsed => {
+                        let metadata = null;
+                        if (parsed) {
+                            if (parsed.parameters) {
+                                metadata = parsed.parameters;
+                            }
+                            else if (parsed.Parameters) {
+                                metadata = parsed.Parameters;
+                            }
+                            else if (parsed.prompt) {
+                                metadata = parsed.prompt;
+                            }
+                            else if (parsed.UserComment) {
+                                metadata = parsed.UserComment;
+                            }
+                            else if (parsed.userComment) {
+                                metadata = parsed.userComment;
+                            }
+                            else if (parsed.model) {
+                                metadata = parsed.model;
+                            }
+                            else if (parsed.Model) {
+                                metadata = parsed.Model;
+                            }
+                        }
+                        if (metadata instanceof Uint8Array) {
+                            let prefix = metadata.slice(0, 8);
+                            let data = metadata.slice(8);
+                            let encodeType = new TextDecoder().decode(prefix);
+                            metadata = encodeType.startsWith('UNICODE') ? decodeUtf16(data) : new TextDecoder().decode(data);
+                        }
+                        if (metadata) {
+                            metadata = metadata.trim();
+                            if (metadata.startsWith('{')) {
+                                let json = JSON.parse(metadata);
+                                if ('sui_image_params' in json) {
+                                    // It's swarm, we're good
+                                }
+                                else if ("Prompt" in json) {
+                                    // Fooocus
+                                    json = remapMetadataKeys(json, fooocusMetadataMap);
+                                    metadata = JSON.stringify({ 'sui_image_params': json });
+                                }
+                                else {
+                                    // Don't know - discard for now.
+                                    metadata = null;
+                                }
+                            }
+                            else {
+                                let lines = metadata.split('\n');
+                                if (lines.length > 1) {
+                                    metadata = upvertAutoWebuiMetadataToSwarm(metadata);
+                                }
+                                else {
+                                    // ???
+                                    metadata = null;
+                                }
+                            }
+                        }
+                        setCurrentImage(data, metadata);
+                    }).catch(err => {
+                        setCurrentImage(e.target.result, null);
+                    });
+                };
                 reader.onload = (e) => {
                     try {
-                        parseMetadata(e.target.result, (data, metadata) => { setCurrentImage(data, metadata); });
+                        parsemetadata(e);
                     }
                     catch (e) {
                         setCurrentImage(e.target.result, null);
@@ -2301,15 +2043,6 @@ function storeImageToHistoryWithCurrentParams(img) {
 
 function genpageLoad() {
     console.log('Load page...');
-    $('#toptablist').on('shown.bs.tab', function (e) {
-        let versionDisp = getRequiredElementById('version_display');
-        if (e.target.id == 'maintab_comfyworkflow') {
-            versionDisp.style.display = 'none';
-        }
-        else {
-            versionDisp.style.display = '';
-        }
-    });
     window.imageEditor = new ImageEditor(getRequiredElementById('image_editor_input'), true, true, () => setPageBarsFunc(), () => needsNewPreview());
     let editorSizebar = getRequiredElementById('image_editor_sizebar');
     window.imageEditor.onActivate = () => {
@@ -2327,33 +2060,6 @@ function genpageLoad() {
         { key: 'Store Full Canvas To History', action: () => {
             let img = window.imageEditor.getMaximumImageData();
             storeImageToHistoryWithCurrentParams(img);
-        }},
-        { key: 'Auto Segment Image (SAM2)', action: () => {
-            if (!currentBackendFeatureSet.includes('sam2')) {
-                $('#sam2_installer').modal('show');
-            }
-            else {
-                let img = window.imageEditor.getFinalImageData();
-                let genData = getGenInput();
-                genData['controlnetimageinput'] = img;
-                genData['controlnetstrength'] = 1;
-                genData['controlnetpreprocessor'] = 'Segment Anything 2 Global Autosegment base_plus';
-                genData['images'] = 1;
-                genData['prompt'] = '';
-                delete genData['batchsize'];
-                genData['donotsave'] = true;
-                genData['controlnetpreviewonly'] = true;
-                makeWSRequestT2I('GenerateText2ImageWS', genData, data => {
-                    if (!data.image) {
-                        return;
-                    }
-                    let newImg = new Image();
-                    newImg.onload = () => {
-                        imageEditor.addImageLayer(newImg);
-                    };
-                    newImg.src = data.image;
-                });
-            }
         }}
     ];
     pageSizer();
