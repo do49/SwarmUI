@@ -464,6 +464,11 @@ window.addEventListener('keydown', function(kbevent) {
     else if ((kbevent.key == 'ArrowRight' || kbevent.key == 'ArrowDown') && (isFullView || isCurImgFocused)) {
         shiftToNextImagePreview(true, isFullView);
     }
+    else if (kbevent.key === "Enter" && kbevent.ctrlKey && kbevent.shiftKey && isVisible(getRequiredElementById('main_image_area'))) {
+        for (let i = 0; i < 10; i++) {
+            getRequiredElementById('alt_generate_button').click();
+        }
+    }
     else if (kbevent.key === "Enter" && kbevent.ctrlKey && isVisible(getRequiredElementById('main_image_area'))) {
         getRequiredElementById('alt_generate_button').click();
     }

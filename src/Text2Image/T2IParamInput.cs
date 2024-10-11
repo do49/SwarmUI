@@ -459,6 +459,71 @@ public class T2IParamInput
         PromptTagLengthEstimators["embed"] = PromptTagLengthEstimators["preset"];
         PromptTagLengthEstimators["embedding"] = PromptTagLengthEstimators["preset"];
         PromptTagLengthEstimators["lora"] = PromptTagLengthEstimators["preset"];
+        PromptTagProcessors["seq"] = (data, context) =>
+        {
+            if (!sequenceDatastore.ContainsKey(("seq", data))) {
+                string separator = data.Contains("||") ? "||" : (data.Contains('|') ? "|" : ",");
+                string[] rawVals = data.Split(separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (rawVals.Length == 0)
+                {
+                    Logs.Warning($"Sequence input '{data}' is empty and will be ignored.");
+                    return null;
+                }
+                List<string> vals = [.. rawVals];
+
+                sequenceDatastore[("seq", data)] = new SequenceData(vals);
+            }
+            
+            return sequenceDatastore[("seq", data)].GetNextValue().Trim();
+        };
+        PromptTagLengthEstimators["seq"] = (data) =>
+        {
+            if (!sequenceDatastore.ContainsKey(("seq", data))) {
+                return "";
+            } else {
+                return sequenceDatastore[("seq", data)].PeekNextValue();
+            }
+        };
+        PromptTagProcessors["wildcardseq"] = (data, context) =>
+        {
+            string card = T2IParamTypes.GetBestInList(data, WildcardsHelper.ListFiles);
+            if (card is null)
+            {
+                Logs.Warning($"Wildcard input '{data}' does not match any wildcard file and will be ignored.");
+                return null;
+            }
+            WildcardsHelper.Wildcard wildcard = WildcardsHelper.GetWildcard(card);
+            List<string> usedWildcards = context.Input.ExtraMeta.GetOrCreate("used_wildcards", () => new List<string>()) as List<string>;
+            usedWildcards.Add(card);
+
+            var wildcardKey = ("wc", card + "_" + GetStringArrayHashCode(wildcard.Options));
+
+            if (!sequenceDatastore.ContainsKey(wildcardKey)) {
+                sequenceDatastore[wildcardKey] = new SequenceData([.. wildcard.Options]);
+            }
+
+            return context.Parse(sequenceDatastore[wildcardKey].GetNextValue()).Trim();
+        };
+        PromptTagProcessors["wcs"] = PromptTagProcessors["wildcardseq"];
+        PromptTagLengthEstimators["wildcardseq"] = (data) =>
+        {
+            string card = T2IParamTypes.GetBestInList(data, WildcardsHelper.ListFiles);
+            if (card is null)
+            {
+                Logs.Warning($"Wildcard input '{data}' does not match any wildcard file and will be ignored.");
+                return null;
+            }
+            WildcardsHelper.Wildcard wildcard = WildcardsHelper.GetWildcard(card);
+
+            var wildcardKey = ("wc", card + "_" + GetStringArrayHashCode(wildcard.Options));
+
+            if (!sequenceDatastore.ContainsKey(wildcardKey)) {
+                sequenceDatastore[wildcardKey] = new SequenceData([.. wildcard.Options]);
+            }
+
+            return sequenceDatastore[wildcardKey].PeekNextValue().Trim();
+        };
+        PromptTagLengthEstimators["wcs"] = PromptTagLengthEstimators["wildcardseq"];
     }
 
     /// <summary>The raw values in this input. Do not use this directly, instead prefer:
@@ -633,8 +698,12 @@ public class T2IParamInput
     /// <summary>Special utility to process prompt inputs before the request is executed (to parse wildcards, embeddings, etc).</summary>
     public void PreparsePromptLikes()
     {
+        ClearSequenceDatastoreStatus();
+
         ValuesInput["prompt"] = ProcessPromptLike(T2IParamTypes.Prompt);
         ValuesInput["negativeprompt"] = ProcessPromptLike(T2IParamTypes.NegativePrompt);
+
+        CleanSequenceDatastores();
     }
 
     /// <summary>Formats embeddings in a prompt string and returns the cleaned string.</summary>
@@ -960,5 +1029,55 @@ public class T2IParamInput
             return val;
         }
         return $"T2IParamInput({string.Join(", ", ValuesInput.Select(x => $"{x.Key}: {stringifyVal(x.Value)}"))})";
+    }
+
+    private static Dictionary<(string, string), SequenceData> sequenceDatastore = new();
+
+    private class SequenceData(List<string> sequenceValues)
+    {
+        private List<String> sequenceValues = sequenceValues;
+        private int nextIndexToReturn = 0;
+
+        private bool justRan = false;
+
+        public string PeekNextValue() { return sequenceValues[nextIndexToReturn % sequenceValues.Count]; }
+
+        public string GetNextValue() { 
+            justRan = true;
+            return sequenceValues[nextIndexToReturn++ % sequenceValues.Count];
+        }
+
+        public void ClearJustRan() { justRan = false; }
+
+        public bool IsStale() { return !justRan; }
+        // public bool IsStale() { return (lastGenerationParticipated - sequenceGeneration) > 4; }
+    }
+
+    private static void ClearSequenceDatastoreStatus() {
+        foreach (SequenceData sequenceData in sequenceDatastore.Values) {
+            sequenceData.ClearJustRan();
+        }
+    }
+
+    private static void CleanSequenceDatastores() {
+        List<(string, string)> sequenceKeysToClean = new();
+        foreach (KeyValuePair<(string, string), SequenceData> entry in sequenceDatastore) {
+            if (entry.Value.IsStale()) {
+                sequenceKeysToClean.Add(entry.Key);
+            }
+        }
+        foreach ((string, string) key in sequenceKeysToClean) {
+            Logs.Info($"Cleaning stale sequence data for key '{key}'.");
+            sequenceDatastore.Remove(key);
+        }
+    }
+
+    private static string GetStringArrayHashCode(IEnumerable<string> strings) {
+        // return string.Join(",", arr).GetHashCode().ToString();
+        var hash = new HashCode();
+        foreach (string str in strings) {
+            hash.Add(str);
+        }
+        return hash.ToHashCode().ToString();
     }
 }

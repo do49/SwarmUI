@@ -1193,6 +1193,14 @@ class PromptTabCompleteClass {
         this.registerPrefix('break', 'Split this prompt across multiple lines of conditioning to the model (helps separate concepts for long prompts).', (prefix) => {
             return [];
         }, true);
+        this.registerPrefix('seq', 'Iterate in order from a list of words to include', (prefix) => {
+            return ['\nIterate in order from a list of words to include, like "<seq:cat,dog,elephant>".', '\nYou can use "||" instead of "," if you need to include commas in your values.'];
+        });
+        this.registerPrefix('wildcardseq', 'Iterate in order through a wildcard file (presaved list of options)', (prefix) => {
+            let prefixLow = prefix.toLowerCase();
+            return allWildcards.filter(w => w.toLowerCase().includes(prefixLow));
+        });
+        this.registerAltPrefix('wcs', 'wildcardseq');
         this.lastWord = null;
         this.lastResults = null;
         this.blockInput = false;
