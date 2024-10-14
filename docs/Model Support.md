@@ -97,15 +97,16 @@ Download the model, then click "`Edit Metadata`" and select `(Temporary) AuraFlo
 # Black Forest Labs' Flux.1 Models
 
 - Black Forest Labs' Flux.1 model is fully supported in Swarm <https://blackforestlabs.ai/announcing-black-forest-labs/>
-    - You can download BFL's original files:
-        - Download "Schnell" (Turbo) from <https://huggingface.co/black-forest-labs/FLUX.1-schnell>
-        - Or "Dev" (non-Turbo) from <https://huggingface.co/black-forest-labs/FLUX.1-dev>
-        - Put dev/schnell in `(Swarm)/Models/unet`
-        - Put the `ae.sft` file in `(Swarm)/Models/VAE`
-    - Or the simplified fp8 file:
+    - **Recommended:** use the [NF4 Format Files](#bits-and-bytes-nf4-format-models)
+    - **Alternate:** the simplified fp8 file:
         - Dev <https://huggingface.co/Comfy-Org/flux1-dev/blob/main/flux1-dev-fp8.safetensors>
         - Schnell <https://huggingface.co/Comfy-Org/flux1-schnell/blob/main/flux1-schnell-fp8.safetensors>
         - goes in your regular `(Swarm)/Models/Stable-Diffusion` dir
+    - **or, not recommended:** You can download BFL's original files:
+        - Download "Schnell" (Turbo) from <https://huggingface.co/black-forest-labs/FLUX.1-schnell>
+        - Or "Dev" (non-Turbo) from <https://huggingface.co/black-forest-labs/FLUX.1-dev>
+        - Put dev/schnell in `(Swarm)/Models/diffusion_models`
+        - Put the `ae.sft` file in `(Swarm)/Models/VAE`
     - For both models, use CFG=1 (negative prompt won't work). Sampling leave default (will use Euler + Simple)
         - For the Dev model, there is also a `Flux Guidance Scale` parameter under `Sampling`, which is a distilled embedding value that the model was trained to use.
         - Dev can use some slightly-higher CFG values (allowing for negative prompt), possibly higher if you reduce the Flux Guidance value and/or use Dynamic Thresholding.
@@ -117,3 +118,27 @@ Download the model, then click "`Edit Metadata`" and select `(Temporary) AuraFlo
     - It natively supports any resolution up to 2 mp (1920x1088), and any aspect ratio thereof. By default will use 1MP 1024x1024 in Swarm. You can take it down to 256x256 and still get good results.
         - You can mess with the resolution quite a lot and still get decent results. It's very flexible even past what it was trained on.
     - You _can_ do a refiner upscale 2x and it will work but take a long time and might not have excellent quality. Refiner tiling may be better.
+
+# Bits-and-Bytes NF4 Format Models
+
+- BnB NF4 format models, such as this copy of Flux Dev <https://huggingface.co/lllyasviel/flux1-dev-bnb-nf4/tree/main?show_file_info=flux1-dev-bnb-nf4.safetensors>, are partially supported in SwarmUI automatically.
+    - The detection internally works by looking for `bitsandbytes__nf4` in the model's keys
+    - The first time you try to load an NF4 model, it will give you a popup asking to install support
+        - This will autoinstall https://github.com/comfyanonymous/ComfyUI_bitsandbytes_NF4 which is developed by comfyanonymous and lllyasviel, and is under the AGPL license.
+    - You can accept this popup, and it will install and reload the backend
+    - Then try to generate again, and it should work
+- Note that BnB-NF4 models have multiple compatibility limitations, including even LoRAs don't apply properly.
+    - If you want a quantized flux model, GGUF is recommended instead.
+
+# GGUF Quantized Models
+
+- GGUF Quantized `diffusion_models` models, such as Flux Schnell <https://huggingface.co/city96/FLUX.1-schnell-gguf/tree/main> or Flux Dev <https://huggingface.co/city96/FLUX.1-dev-gguf/tree/main> are supported in SwarmUI automatically.
+    - The detection is based on file extension.
+    - They go in `(Swarm)/Models/diffusion_models` and work similar to other `diffusion_models` format models
+        - You will need a relevant VAE in your `(Swarm)/Models/VAE` folder
+        - For Flux you need <https://huggingface.co/black-forest-labs/FLUX.1-schnell/blob/main/ae.safetensors>
+    - You will have to click `Edit Metadata` on the model and set the architecture, it cannot be autodetected currently.
+    - The first time you try to load a GGUF model, it will give you a popup asking to install support
+        - This will autoinstall https://github.com/city96/ComfyUI-GGUF which is developed by city96.
+    - You can accept this popup, and it will install and reload the backend
+    - Then try to generate again, and it should just work

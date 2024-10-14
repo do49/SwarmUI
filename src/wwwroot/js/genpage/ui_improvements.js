@@ -251,6 +251,16 @@ class UIImprovementHandler {
     constructor() {
         this.lastPopover = null;
         let lastShift = false;
+        this.lastSelectedTextbox = null;
+        this.timeOfLastTextboxSelectTrack = 0;
+        this.lastTextboxCursorPos = -1;
+        document.addEventListener('focusout', (e) => {
+            if (e.target.tagName == 'TEXTAREA') {
+                this.lastSelectedTextbox = e.target;
+                this.timeOfLastTextboxSelectTrack = Date.now();
+                this.lastTextboxCursorPos = e.target.selectionEnd;
+            }
+        }, true);
         document.addEventListener('mousedown', (e) => {
             if (e.target.tagName == 'SELECT') {
                 lastShift = e.shiftKey;
@@ -361,8 +371,16 @@ class UIImprovementHandler {
         }, true);
     }
 
+    getLastSelectedTextbox() {
+        let now = Date.now();
+        if (now - this.timeOfLastTextboxSelectTrack > 1000) {
+            return [null, -1];
+        }
+        return [this.lastSelectedTextbox, this.lastTextboxCursorPos];
+    }
+
     shouldAlterSelect(elem) {
-        if (elem.options.length > 5) {
+        if (elem.options.length > 1) {
             return true;
         }
         if ([... elem.options].filter(o => o.innerText.includes('(')).length > 0) {
@@ -381,7 +399,7 @@ class UIImprovementHandler {
         }
         let popId = `uiimprover_${elem.id}`;
         let rect = elem.getBoundingClientRect();
-        let buttons = [...elem.options].map(o => { return { key_html: o.dataset.cleanname, key: o.innerText, searchable: `${o.dataset.cleanname} ${o.innerText} ${o.value}`, action: () => { elem.value = o.value; triggerChangeFor(elem); } }; })
+        let buttons = [...elem.options].filter(o => o.style.display != 'none').map(o => { return { key_html: o.dataset.cleanname, key: o.innerText, searchable: `${o.dataset.cleanname} ${o.innerText} ${o.value}`, action: () => { elem.value = o.value; triggerChangeFor(elem); } }; })
         this.lastPopover = new AdvancedPopover(popId, buttons, true, rect.x, rect.y, elem.parentElement, elem.selectedIndex < 0 ? null : elem.selectedOptions[0].innerText, 0);
         e.preventDefault();
         e.stopPropagation();

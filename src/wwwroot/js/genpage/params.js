@@ -329,6 +329,13 @@ function genInputs(delay_final = false) {
             inputNegativePrompt.addEventListener('input', update);
             inputNegativePrompt.addEventListener('change', update);
         }
+        let inputCfgScale = document.getElementById('input_cfgscale');
+        if (inputCfgScale) {
+            inputCfgScale.addEventListener('change', () => {
+                tweakNegativePromptBox();
+            });
+            tweakNegativePromptBox();
+        }
         let inputLoras = document.getElementById('input_loras');
         if (inputLoras) {
             inputLoras.addEventListener('change', () => {
@@ -409,21 +416,21 @@ function genInputs(delay_final = false) {
         if (controlnetGroup) {
             controlnetGroup.append(createDiv(`controlnet_button_preview`, null, `<button class="basic-button" onclick="controlnetShowPreview()">Preview</button>`));
             if (!currentBackendFeatureSet.includes('controlnetpreprocessors')) {
-                controlnetGroup.append(createDiv(`controlnet_install_preprocessors`, null, `<button class="basic-button" onclick="installControlnetPreprocessors()">Install Controlnet Preprocessors</button>`));
+                controlnetGroup.append(createDiv(`controlnet_install_preprocessors`, 'keep_group_visible', `<button class="basic-button" onclick="installFeatureById('controlnet_preprocessors', 'controlnet_install_preprocessors')">Install Controlnet Preprocessors</button>`));
             }
         }
         let revisionGroup = document.getElementById('input_group_content_revision');
         if (revisionGroup && !currentBackendFeatureSet.includes('ipadapter')) {
-            revisionGroup.append(createDiv(`revision_install_ipadapter`, null, `<button class="basic-button" onclick="revisionInstallIPAdapter()">Install IP Adapter</button>`));
+            revisionGroup.append(createDiv(`revision_install_ipadapter`, null, `<button class="basic-button" onclick="installFeatureById('ipadapter', 'revision_install_ipadapter')">Install IP Adapter</button>`));
         }
         let videoGroup = document.getElementById('input_group_content_video');
         if (videoGroup && !currentBackendFeatureSet.includes('frameinterps')) {
-            videoGroup.append(createDiv(`video_install_frameinterps`, null, `<button class="basic-button" onclick="installVideoRife()">Install Frame Interpolation</button>`));
+            videoGroup.append(createDiv(`video_install_frameinterps`, 'keep_group_visible', `<button class="basic-button" onclick="installFeatureById('frame_interpolation', 'video_install_frameinterps')">Install Frame Interpolation</button>`));
         }
-        hideUnsupportableParams();
         for (let runnable of postParamBuildSteps) {
             runnable();
         }
+        hideUnsupportableParams();
         let loras = document.getElementById('input_loras');
         if (loras) {
             reapplyLoraWeights();
@@ -492,6 +499,7 @@ function getGenInput(input_overrides = {}, input_preoverrides = {}) {
     }
     if (!input['vae'] || input['vae'] == 'Automatic') {
         input['automaticvae'] = true;
+        delete input['vae'];
     }
     let revisionImageArea = getRequiredElementById('alt_prompt_image_area');
     let revisionImages = [...revisionImageArea.querySelectorAll('.alt-prompt-image')].filter(c => c.tagName == "IMG");
@@ -529,6 +537,9 @@ function getGenInput(input_overrides = {}, input_preoverrides = {}) {
 function refreshParameterValues(strong = true, callback = null) {
     genericRequest('TriggerRefresh', {strong: strong}, data => {
         loadUserData();
+        if (!gen_param_types) {
+            return;
+        }
         for (let param of data.list) {
             let origParam = gen_param_types.find(p => p.id == param.id);
             if (origParam) {
@@ -584,7 +595,7 @@ function refreshParameterValues(strong = true, callback = null) {
     });
 }
 
-function setDirectParamValue(param, value, paramElem = null) {
+function setDirectParamValue(param, value, paramElem = null, forceDropdowns = false) {
     if (!paramElem) {
         paramElem = getRequiredElementById(`input_${param.id}`);
     }
@@ -603,6 +614,15 @@ function setDirectParamValue(param, value, paramElem = null) {
     }
     else if (param.type == "image" || param.type == "image_list") {
         // do not edit images directly, this will just misbehave
+    }
+    else if (paramElem.tagName == "SELECT") {
+        if (![...paramElem.querySelectorAll('option')].map(o => o.value).includes(value)) {
+            if (!forceDropdowns) {
+                return;
+            }
+            paramElem.add(new Option(`${value} (Invalid)`, value, false, false));
+        }
+        paramElem.value = value;
     }
     else {
         paramElem.value = value;
@@ -739,7 +759,7 @@ function hideUnsupportableParams() {
     for (let group in groups) {
         let groupData = groups[group];
         let groupElem = getRequiredElementById(`auto-group-${group}`);
-        if (groupData.visible == 0) {
+        if (groupData.visible == 0 && !groupElem.querySelector('.keep_group_visible')) {
             groupElem.style.display = 'none';
         }
         else {
@@ -1187,10 +1207,33 @@ class PromptTabCompleteClass {
             }
             return ['\nSpecify before the ">" some text to match against in the image, like "<segment:face>".', '\nCan also do "<segment:text,creativity,threshold>" eg "face,0.6,0.5" where creativity is InitImageCreativity, and threshold is mask matching threshold for CLIP-Seg.', '\nYou can use a negative threshold value like "<segment:face,0.6,-0.5>" to invert the mask.', '\nYou may use the "yolo-" prefix to use a YOLOv8 seg model,', '\nor format "yolo-<model>-1" to get specifically the first result from a YOLOv8 match list.'];
         });
+        this.registerPrefix('setvar[var_name]', 'Store text for reference later in the prompt', (prefix) => { 
+            return ['\nSave the content of the tag into the named variable. eg "<setvar[colors]: red and blue>", then use like "<var:colors>"', '\nVariables can include the results of other tags. eg "<setvar[expression]: <random: smiling|frowning|crying>>"', '\nReference stored values later in the prompt with the <var:> tag'];
+        });
+        this.registerPrefix('var', 'Reference a previously saved variable later', (prefix, prompt) => {
+            let prefixLow = prefix.toLowerCase();
+            let possible = [];
+            let matches = prompt.match(/<setvar\[(.*?)\]:/g);
+            if (matches) {
+                for (let match of matches) {
+                    let varName = match.substring('<setvar['.length, match.length - ']:'.length);
+                    if (varName.toLowerCase().includes(prefixLow)) {
+                        possible.push(varName);
+                    }
+                }
+            }
+            if (possible.length == 0) {
+                return ['\nRecall a value previously saved with <setvar[name]:...>, use like "<var:name>"','\n"setvar" must be used earlier in the prompt, then "var" later'];
+            }
+            return possible;
+        });
         this.registerPrefix('clear', 'Automatically clear part of the image to transparent (by CLIP segmentation matching) (iffy quality, prefer the Remove Background parameter over this)', (prefix) => {
             return ['\nSpecify before the ">" some text to match against in the image, like "<segment:background>"'];
         });
         this.registerPrefix('break', 'Split this prompt across multiple lines of conditioning to the model (helps separate concepts for long prompts).', (prefix) => {
+            return [];
+        }, true);
+        this.registerPrefix('trigger', "Automatically fills with the current model or LoRA's trigger phrase(s), if any.", (prefix) => {
             return [];
         }, true);
         this.registerPrefix('seq', 'Iterate in order from a list of words to include', (prefix) => {
@@ -1264,9 +1307,33 @@ class PromptTabCompleteClass {
                         rawMatchSet.push(entry);
                     }
                 }
-                startWithList.sort((a, b) => a.low.length - b.low.length || a.low.localeCompare(b.low));
-                containList.sort((a, b) => a.low.length - b.low.length || a.low.localeCompare(b.low));
-                baseList = startWithList.concat(containList);
+                let sortMode = getUserSetting('autocomplete.sortmode');
+                let doSortList = (list) => {
+                    if (sortMode == 'Active') {
+                        list.sort((a, b) => a.low.length - b.low.length || a.low.localeCompare(b.low));
+                    }
+                    else if (sortMode == 'Alphabetical') {
+                        list.sort((a, b) => a.low.localeCompare(b.low));
+                    }
+                    else if (sortMode == 'Frequency') {
+                        list.sort((a, b) => b.count - a.count);
+                    }
+                    // else 'None'
+                }
+                let matchMode = getUserSetting('autocomplete.matchmode');
+                if (matchMode == 'Bucketed') {
+                    doSortList(startWithList);
+                    doSortList(containList);
+                    baseList = startWithList.concat(containList);
+                }
+                else if (matchMode == 'Contains') {
+                    doSortList(rawMatchSet);
+                    baseList = rawMatchSet;
+                }
+                else if (matchMode == 'StartsWith') {
+                    doSortList(startWithList);
+                    baseList = startWithList;
+                }
                 if (baseList.length > 50) {
                     baseList = baseList.slice(0, 50);
                 }
@@ -1293,7 +1360,7 @@ class PromptTabCompleteClass {
         if (!(prefix in this.prefixes)) {
             return [];
         }
-        return this.prefixes[prefix].completer(suffix).map(p => p.startsWith('\n') ? p : `<${prefix}:${p}>`);
+        return this.prefixes[prefix].completer(suffix, prompt).map(p => p.startsWith('\n') ? p : `<${prefix}:${p}>`);
     }
 
     onKeyDown(e) {
@@ -1307,7 +1374,10 @@ class PromptTabCompleteClass {
                 this.popover.remove();
                 this.popover = null;
                 this.blockInput = true;
-                setTimeout(() => this.blockInput = false, 10);
+                setTimeout(() => {
+                    this.blockInput = false;
+                    this.onInput(e.target);
+                }, 10);
             }
         }
     }

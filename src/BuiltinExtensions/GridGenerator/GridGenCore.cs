@@ -201,7 +201,7 @@ public partial class GridGenCore
                     {
                         valStr = T2IParamTypes.ValidateParam(Mode, valStr, grid.InitialParams.SourceSession);
                     }
-                    string key = ValidKeysMatcher.TrimToMatches(valStr.ToLowerFast());
+                    string key = ValidKeysMatcher.TrimToMatches(valStr.Replace('.', '_').ToLowerFast());
                     if (key.Length > 15)
                     {
                         // Long keys might be model names or similar, so trim them to a probably better name
@@ -211,7 +211,7 @@ public partial class GridGenCore
                             key = key[0..15];
                         }
                     }
-                    if (key.Length < 4 || keys.Contains(key))
+                    if (key.Length < 1 || keys.Contains(key))
                     {
                         key = $"{key}{index}";
                     }
@@ -222,13 +222,9 @@ public partial class GridGenCore
                     keys.Add(key);
                     Values.Add(new AxisValue(grid, this, key, $"{id}={valStr}") { Skip = skip });
                 }
-                catch (SwarmReadableErrorException ex)
-                {
-                    throw new SwarmReadableErrorException($"value '{val}' errored: {ex.Message}");
-                }
                 catch (Exception ex)
                 {
-                    throw new Exception($"value '{val}' errored: {ex}");
+                    throw new Exception($"value '{val}' errored: {ex.ReadableString()}");
                 }
             }
         }
@@ -662,7 +658,7 @@ public partial class GridGenCore
                 }
                 catch (Exception ex)
                 {
-                    throw new Exception($"Failed to build HTML for axis '{axis.ID}': {ex}");
+                    throw new Exception($"Failed to build HTML for axis '{axis.ID}': {ex.ReadableString()}");
                 }
             }
             content.Append("</table>\n<div class=\"axis_selectors\">");
@@ -755,13 +751,9 @@ public partial class GridGenCore
                     newAxis.BuildFromListStr(id, grid, axis["vals"].ToString());
                     grid.Axes.Add(newAxis);
                 }
-                catch (SwarmReadableErrorException ex)
-                {
-                    throw new SwarmReadableErrorException($"Invalid axis '{id}': {ex.Message}");
-                }
                 catch (Exception ex)
                 {
-                    throw new Exception($"Invalid axis '{id}': errored: {ex}");
+                    throw new Exception($"Invalid axis '{id}': errored: {ex.ReadableString()}");
                 }
             }
         }
@@ -817,7 +809,7 @@ public partial class GridGenCore
             }
             catch (Exception ex)
             {
-                Logs.Debug($"Error in GridGen wait-to-clear-last: {ex}");
+                Logs.Debug($"Error in GridGen wait-to-clear-last: {ex.ReadableString()}");
             }
             finally
             {
@@ -830,7 +822,7 @@ public partial class GridGenCore
                 }
                 catch (Exception ex)
                 {
-                    Logs.Debug($"Error in GridGen delete-last: {ex}");
+                    Logs.Debug($"Error in GridGen delete-last: {ex.ReadableString()}");
                 }
             }
         });

@@ -49,6 +49,8 @@ public class ComfyUIBackendExtension : Extension
         ["Sam2Segmentation"] = "sam2",
         ["SwarmYoloDetection"] = "yolov8",
         ["PixArtCheckpointLoader"] = "extramodelspixart",
+        ["CheckpointLoaderNF4"] = "bnb_nf4",
+        ["UnetLoaderGGUF"] = "gguf",
         ["TensorRTLoader"] = "tensorrt"
     };
 
@@ -87,14 +89,37 @@ public class ComfyUIBackendExtension : Extension
             FeaturesSupported.UnionWith(["sam2"]);
             FeaturesDiscardIfNotFound.UnionWith(["sam2"]);
         }
-        static string[] listModelsFor(string subpath)
+        if (Directory.Exists($"{FilePath}/DLNodes/ComfyUI_bitsandbytes_NF4"))
         {
-            string path = $"{Program.ServerSettings.Paths.ModelRoot}/{subpath}";
-            Directory.CreateDirectory(path);
-            return [.. Directory.EnumerateFiles(path).Where(f => f.EndsWith(".pth") || f.EndsWith(".pt") || f.EndsWith(".ckpt") || f.EndsWith(".safetensors") || f.EndsWith(".sft") || f.EndsWith(".engine")).Select(f => f.Replace('\\', '/').AfterLast('/'))];
+            FeaturesSupported.UnionWith(["bnb_nf4"]);
+            FeaturesDiscardIfNotFound.UnionWith(["bnb_nf4"]);
         }
-        T2IParamTypes.ConcatDropdownValsClean(ref UpscalerModels, listModelsFor("upscale_models").Select(u => $"model-{u}///Model: {u}"));
+        if (Directory.Exists($"{FilePath}/DLNodes/ComfyUI-GGUF"))
+        {
+            FeaturesSupported.UnionWith(["gguf"]);
+            FeaturesDiscardIfNotFound.UnionWith(["gguf"]);
+        }
+        T2IParamTypes.ConcatDropdownValsClean(ref UpscalerModels, InternalListModelsFor("upscale_models", true).Select(u => $"model-{u}///Model: {u}"));
+        T2IParamTypes.ConcatDropdownValsClean(ref ClipModels, InternalListModelsFor(Program.ServerSettings.Paths.SDClipFolder, true));
+        T2IParamTypes.ConcatDropdownValsClean(ref YoloModels, InternalListModelsFor("yolov8", false));
+        T2IParamTypes.ConcatDropdownValsClean(ref GligenModels, InternalListModelsFor("gligen", false));
         SwarmSwarmBackend.OnSwarmBackendAdded += OnSwarmBackendAdded;
+    }
+
+    /// <summary>Helper to quickly read a list of model files in a model subfolder, for prepopulating model lists during startup.</summary>
+    public static string[] InternalListModelsFor(string subpath, bool createDir)
+    {
+        string path = Utilities.CombinePathWithAbsolute(Program.ServerSettings.Paths.ActualModelRoot, subpath);
+        if (createDir)
+        {
+            Directory.CreateDirectory(path);
+        }
+        else if (!Directory.Exists(path))
+        {
+            return [];
+        }
+        static bool isModelFile(string f) => f.EndsWith(".pth") || f.EndsWith(".pt") || f.EndsWith(".ckpt") || T2IModel.NativelySupportedModelExtensions.Contains(f.AfterLast('.'));
+        return [.. Directory.EnumerateFiles(path, "*.*", SearchOption.AllDirectories).Where(isModelFile).Select(f => Path.GetRelativePath(path, f))];
     }
 
     /// <inheritdoc/>
@@ -275,7 +300,7 @@ public class ComfyUIBackendExtension : Extension
         }
         catch (Exception ex)
         {
-            Logs.Error($"Error refreshing ComfyUI: {ex}");
+            Logs.Error($"Error refreshing ComfyUI: {ex.ReadableString()}");
         }
         if (!tasks.Any())
         {
@@ -283,17 +308,19 @@ public class ComfyUIBackendExtension : Extension
         }
         try
         {
-            Task.WaitAll([.. tasks], Utilities.TimedCancel(TimeSpan.FromMinutes(0.5)));
+            using CancellationTokenSource cancel = Utilities.TimedCancel(TimeSpan.FromMinutes(0.5));
+            Task.WaitAll([.. tasks], cancel.Token);
         }
         catch (Exception ex)
         {
             Logs.Debug("ComfyUI refresh failed, will retry in background");
-            Logs.Verbose($"Error refreshing ComfyUI: {ex}");
+            Logs.Verbose($"Error refreshing ComfyUI: {ex.ReadableString()}");
             Utilities.RunCheckedTask(() =>
             {
                 try
                 {
-                    Task.WaitAll([.. tasks], Utilities.TimedCancel(TimeSpan.FromMinutes(5)));
+                    using CancellationTokenSource cancel = Utilities.TimedCancel(TimeSpan.FromMinutes(5));
+                    Task.WaitAll([.. tasks], cancel.Token);
                 }
                 catch (Exception ex2)
                 {
@@ -337,7 +364,11 @@ public class ComfyUIBackendExtension : Extension
             AssignValuesFromRaw(rawObjectInfo);
         });
     }
+
     public static LockObject ValueAssignmentLocker = new();
+    
+    /// <summary>Add handlers here to do additional parsing of RawObjectInfo data.</summary>
+    public static List<Action<JObject>> RawObjectInfoParsers = [];
 
     public static void AssignValuesFromRaw(JObject rawObjectInfo)
     {
@@ -394,6 +425,14 @@ public class ComfyUIBackendExtension : Extension
             {
                 T2IParamTypes.ConcatDropdownValsClean(ref ControlnetUnionTypes, unionCtrlNet["input"]["required"]["type"][0].Select(m => $"{m}///{m} (New)"));
             }
+            if (rawObjectInfo.TryGetValue("CLIPLoader", out JToken clipLoader))
+            {
+                T2IParamTypes.ConcatDropdownValsClean(ref ClipModels, clipLoader["input"]["required"]["clip_name"][0].Select(m => $"{m}"));
+            }
+            if (rawObjectInfo.TryGetValue("CLIPLoaderGGUF", out JToken clipLoaderGguf))
+            {
+                T2IParamTypes.ConcatDropdownValsClean(ref ClipModels, clipLoaderGguf["input"]["required"]["clip_name"][0].Select(m => $"{m}"));
+            }
             if (rawObjectInfo.TryGetValue("Sam2AutoSegmentation", out JToken nodeData))
             {
                 foreach (string size in new string[] { "base_plus", "large", "small" })
@@ -449,10 +488,21 @@ public class ComfyUIBackendExtension : Extension
             {
                 FeaturesSupported.Remove(feature);
             }
+            foreach (Action<JObject> parser in RawObjectInfoParsers)
+            {
+                try
+                {
+                    parser(rawObjectInfo);
+                }
+                catch (Exception ex)
+                {
+                    Logs.Error($"Error while running extension parsing on raw object info: {ex.ReadableString()}");
+                }
+            }
         }
     }
 
-    public static T2IRegisteredParam<string> WorkflowParam, CustomWorkflowParam, SamplerParam, SchedulerParam, RefinerUpscaleMethod, UseIPAdapterForRevision, IPAdapterWeightType, VideoPreviewType, VideoFrameInterpolationMethod, GligenModel, YoloModelInternal, PreferredDType;
+    public static T2IRegisteredParam<string> WorkflowParam, CustomWorkflowParam, SamplerParam, SchedulerParam, RefinerUpscaleMethod, UseIPAdapterForRevision, IPAdapterWeightType, VideoPreviewType, VideoFrameInterpolationMethod, GligenModel, YoloModelInternal, PreferredDType, ClipLModel, ClipGModel, T5XXLModel;
 
     public static T2IRegisteredParam<bool> AITemplateParam, DebugRegionalPrompting, ShiftedLatentAverageInit;
 
@@ -463,7 +513,7 @@ public class ComfyUIBackendExtension : Extension
     public static T2IRegisteredParam<string>[] ControlNetPreprocessorParams = new T2IRegisteredParam<string>[3], ControlNetUnionTypeParams = new T2IRegisteredParam<string>[3];
 
     public static List<string> UpscalerModels = ["pixel-lanczos///Pixel: Lanczos (cheap + high quality)", "pixel-bicubic///Pixel: Bicubic (Basic)", "pixel-area///Pixel: Area", "pixel-bilinear///Pixel: Bilinear", "pixel-nearest-exact///Pixel: Nearest-Exact (Pixel art)", "latent-bislerp///Latent: Bislerp", "latent-bicubic///Latent: Bicubic", "latent-area///Latent: Area", "latent-bilinear///Latent: Bilinear", "latent-nearest-exact///Latent: Nearest-Exact"],
-        Samplers = ["euler///Euler", "euler_ancestral///Euler Ancestral (Randomizing)", "heun///Heun", "heunpp2///Heun++ 2", "dpm_2///DPM-2 (Diffusion Probabilistic Model)", "dpm_2_ancestral///DPM-2 Ancestral", "lms///LMS (Linear Multi-Step)", "dpm_fast///DPM Fast (DPM without the DPM2 slowdown)", "dpm_adaptive///DPM Adaptive (Dynamic Steps)", "dpmpp_2s_ancestral///DPM++ 2S Ancestral (2nd Order Single-Step)", "dpmpp_sde///DPM++ SDE (Stochastic / randomizing)", "dpmpp_sde_gpu///DPM++ SDE, GPU Seeded", "dpmpp_2m///DPM++ 2M (2nd Order Multi-Step)", "dpmpp_2m_sde///DPM++ 2M SDE", "dpmpp_2m_sde_gpu///DPM++ 2M SDE, GPU Seeded", "dpmpp_3m_sde///DPM++ 3M SDE (3rd Order Multi-Step)", "dpmpp_3m_sde_gpu///DPM++ 3M SDE, GPU Seeded", "ddim///DDIM (Denoising Diffusion Implicit Models)", "ddpm///DDPM (Denoising Diffusion Probabilistic Models)", "lcm///LCM (for LCM models)", "uni_pc///UniPC (Unified Predictor-Corrector)", "uni_pc_bh2///UniPC BH2", "euler_cfg_pp///Euler CFG++ (Manifold-constrained CFG)", "euler_ancestral_cfg_pp///Euler Ancestral CFG++", "ipndm///iPNDM (Improved Pseudo-Numerical methods for Diffusion Models)", "ipndm_v///iPNDM-V (Variable-Step)", "deis///DEIS (Diffusion Exponential Integrator Sampler)"],
+        Samplers = ["euler///Euler", "euler_ancestral///Euler Ancestral (Randomizing)", "heun///Heun", "heunpp2///Heun++ 2", "dpm_2///DPM-2 (Diffusion Probabilistic Model)", "dpm_2_ancestral///DPM-2 Ancestral", "lms///LMS (Linear Multi-Step)", "dpm_fast///DPM Fast (DPM without the DPM2 slowdown)", "dpm_adaptive///DPM Adaptive (Dynamic Steps)", "dpmpp_2s_ancestral///DPM++ 2S Ancestral (2nd Order Single-Step)", "dpmpp_sde///DPM++ SDE (Stochastic / randomizing)", "dpmpp_sde_gpu///DPM++ SDE, GPU Seeded", "dpmpp_2m///DPM++ 2M (2nd Order Multi-Step)", "dpmpp_2m_sde///DPM++ 2M SDE", "dpmpp_2m_sde_gpu///DPM++ 2M SDE, GPU Seeded", "dpmpp_3m_sde///DPM++ 3M SDE (3rd Order Multi-Step)", "dpmpp_3m_sde_gpu///DPM++ 3M SDE, GPU Seeded", "ddim///DDIM (Denoising Diffusion Implicit Models)", "ddpm///DDPM (Denoising Diffusion Probabilistic Models)", "lcm///LCM (for LCM models)", "uni_pc///UniPC (Unified Predictor-Corrector)", "uni_pc_bh2///UniPC BH2", "euler_cfg_pp///Euler CFG++ (Manifold-constrained CFG)", "euler_ancestral_cfg_pp///Euler Ancestral CFG++", "dpmpp_2m_cfg_pp///DPM++ 2M CFG++", "dpmpp_2s_ancestral_cfg_pp///DPM++ 2S Ancestral CFG++", "ipndm///iPNDM (Improved Pseudo-Numerical methods for Diffusion Models)", "ipndm_v///iPNDM-V (Variable-Step)", "deis///DEIS (Diffusion Exponential Integrator Sampler)"],
         Schedulers = ["normal///Normal", "karras///Karras", "exponential///Exponential", "simple///Simple", "ddim_uniform///DDIM Uniform", "sgm_uniform///SGM Uniform", "turbo///Turbo (for turbo models)", "align_your_steps///Align Your Steps (NVIDIA)", "beta///Beta"];
 
     public static List<string> IPAdapterModels = ["None"], IPAdapterWeightTypes = ["standard", "prompt is more important", "style transfer"];
@@ -471,6 +521,8 @@ public class ComfyUIBackendExtension : Extension
     public static List<string> GligenModels = ["None"];
 
     public static List<string> YoloModels = [];
+
+    public static List<string> ClipModels = [];
 
     public static List<string> ControlnetUnionTypes = ["auto", "openpose", "depth", "hed/pidi/scribble/ted", "canny/lineart/anime_lineart/mlsd", "normal", "segment", "tile", "repaint"];
 
@@ -564,6 +616,15 @@ public class ComfyUIBackendExtension : Extension
         YoloModelInternal = T2IParamTypes.Register<string>(new("YOLO Model Internal", "Parameter for internally tracking YOLOv8 models.\nThis is not for real usage, it is just to expose the list to the UI handler.",
             "", IgnoreIf: "", FeatureFlag: "yolov8", Group: ComfyAdvancedGroup, GetValues: (_) => YoloModels, Toggleable: true, IsAdvanced: true, AlwaysRetain: true, VisibleNormally: false
             ));
+        ClipLModel = T2IParamTypes.Register<string>(new("CLIP-L Model", "Which CLIP-L model to use, for SD3/Flux style 'diffusion_models' folder models.",
+            "", IgnoreIf: "", Group: T2IParamTypes.GroupAdvancedModelAddons, GetValues: (_) => ClipModels, Toggleable: true, IsAdvanced: true, OrderPriority: 15
+            ));
+        ClipGModel = T2IParamTypes.Register<string>(new("CLIP-G Model", "Which CLIP-G model to use, for SD3 style 'diffusion_models' folder models.",
+            "", IgnoreIf: "", Group: T2IParamTypes.GroupAdvancedModelAddons, GetValues: (_) => ClipModels, Toggleable: true, IsAdvanced: true, OrderPriority: 16
+            ));
+        T5XXLModel = T2IParamTypes.Register<string>(new("T5-XXL Model", "Which T5-XXL model to use, for SD3/Flux style 'diffusion_models' folder models.",
+            "", IgnoreIf: "", Group: T2IParamTypes.GroupAdvancedModelAddons, GetValues: (_) => ClipModels, Toggleable: true, IsAdvanced: true, OrderPriority: 17
+            ));
         Program.Backends.RegisterBackendType<ComfyUIAPIBackend>("comfyui_api", "ComfyUI API By URL", "A backend powered by a pre-existing installation of ComfyUI, referenced via API base URL.", true);
         Program.Backends.RegisterBackendType<ComfyUISelfStartBackend>("comfyui_selfstart", "ComfyUI Self-Starting", "A backend powered by a pre-existing installation of the ComfyUI, automatically launched and managed by this UI server.", isStandard: true);
         ComfyUIWebAPI.Register();
@@ -574,17 +635,18 @@ public class ComfyUIBackendExtension : Extension
         WebServer.WebApp.Map("/ComfyBackendDirect/{*Path}", ComfyUIRedirectHelper.ComfyBackendDirectHandler);
     }
 
-    public record struct ComfyBackendData(HttpClient Client, string Address, AbstractT2IBackend Backend);
+    public record struct ComfyBackendData(HttpClient Client, string APIAddress, string WebAddress, AbstractT2IBackend Backend);
 
     public static IEnumerable<ComfyBackendData> ComfyBackendsDirect()
     {
         foreach (ComfyUIAPIAbstractBackend backend in RunningComfyBackends)
         {
-            yield return new(ComfyUIAPIAbstractBackend.HttpClient, backend.Address, backend);
+            yield return new(ComfyUIAPIAbstractBackend.HttpClient, backend.APIAddress, backend.WebAddress, backend);
         }
         foreach (SwarmSwarmBackend swarmBackend in Program.Backends.RunningBackendsOfType<SwarmSwarmBackend>().Where(b => b.RemoteBackendTypes.Any(b => b.StartsWith("comfyui_"))))
         {
-            yield return new(SwarmSwarmBackend.HttpClient, $"{swarmBackend.Address}/ComfyBackendDirect", swarmBackend);
+            string addr = $"{swarmBackend.Address}/ComfyBackendDirect";
+            yield return new(SwarmSwarmBackend.HttpClient, addr, addr, swarmBackend);
         }
     }
 }

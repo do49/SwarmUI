@@ -19,6 +19,10 @@ public class T2IParamInput
     [
         input =>
         {
+            if (!input.RawOriginalSeed.HasValue)
+            {
+                input.RawOriginalSeed = input.Get(T2IParamTypes.Seed, -1);
+            }
             if (!input.TryGet(T2IParamTypes.Seed, out long seed) || seed == -1)
             {
                 input.Set(T2IParamTypes.Seed, Random.Shared.Next());
@@ -98,6 +102,8 @@ public class T2IParamInput
 
         public string[] Embeds, Loras;
 
+        public Dictionary<string, string> Variables = [];
+
         public int SectionID = 0;
 
         public int Depth = 0;
@@ -107,22 +113,74 @@ public class T2IParamInput
 
         public string RawCurrentTag;
 
+        public string TriggerPhraseExtra = "";
+
+        public void TrackWarning(string warning)
+        {
+            Logs.Warning(warning);
+            List<string> warnings = Input.ExtraMeta.GetOrCreate("parser_warnings", () => new List<string>()) as List<string>;
+            warnings.Add(warning);
+        }
+
         public string Parse(string text)
         {
             if (Depth > 1000)
             {
-                Logs.Error("Recursive prompt tags - infinite loop, cannot return valid result.");
+                TrackWarning("Recursive prompt tags - infinite loop, cannot return valid result.");
                 return text;
             }
             Depth++;
-            string result = Input.ProcessPromptLike(text, this);
+            string result = Input.ProcessPromptLike(text, this, false);
             Depth--;
             return result;
         }
     }
 
+    /// <summary>Splits the text within a tag input, in a way that avoids splitting inside subtags, and allows for double-pipe, pipe, or comma separation.</summary>
+    public static string[] SplitSmart(string input)
+    {
+        string separator = ",";
+        int count = 0;
+        for (int i = 0; i < input.Length; i++)
+        {
+            if (input[i] == '<') { count++; }
+            else if (input[i] == '>') { count--; }
+            else if (count == 0 && (input[i] == '|' && i > 0 && input[i - 1] == '|'))
+            {
+                separator = "||";
+                break;
+            }
+            else if (count == 0 && (input[i] == '|'))
+            {
+                separator = "|";
+            }
+        }
+        List<string> output = [];
+        count = 0;
+        int start = 0;
+        for (int i = 0; i < input.Length; i++)
+        {
+            if (input[i] == '<') { count++; }
+            else if (input[i] == '>') { count--; }
+            else if (count == 0 && i + separator.Length - 1 < input.Length && input[i..(i + separator.Length)] == separator)
+            {
+                output.Add(input[start..i]);
+                start = i + separator.Length;
+                i += separator.Length - 1;
+            }
+        }
+        if (start <= input.Length)
+        {
+            output.Add(input[start..]);
+        }
+        return [.. output.Select(v => v.Trim())];
+    }
+
     /// <summary>Mapping of prompt tag prefixes, to allow for registration of custom prompt tags.</summary>
     public static Dictionary<string, Func<string, PromptTagContext, string>> PromptTagProcessors = [];
+
+    /// <summary>Mapping of prompt tags that require no input.</summary>
+    public static Dictionary<string, Func<string, PromptTagContext, string>> PromptTagBasicProcessors = [];
 
     /// <summary>Mapping of prompt tag prefixes, to allow for registration of custom prompt tags - specifically post-processing like lora (which remove from prompt and get read elsewhere).</summary>
     public static Dictionary<string, Func<string, PromptTagContext, string>> PromptTagPostProcessors = [];
@@ -193,11 +251,10 @@ public class T2IParamInput
             {
                 return null;
             }
-            string separator = data.Contains("||") ? "||" : (data.Contains('|') ? "|" : ",");
-            string[] rawVals = data.Split(separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            string[] rawVals = SplitSmart(data);
             if (rawVals.Length == 0)
             {
-                Logs.Warning($"Random input '{data}' is empty and will be ignored.");
+                context.TrackWarning($"Random input '{data}' is empty and will be ignored.");
                 return null;
             }
             string result = "";
@@ -224,8 +281,7 @@ public class T2IParamInput
         };
         PromptTagLengthEstimators["random"] = (data) =>
         {
-            string separator = data.Contains("||") ? "||" : (data.Contains('|') ? "|" : ",");
-            string[] rawVals = data.Split(separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            string[] rawVals = SplitSmart(data);
             int longest = 0;
             string longestStr = "";
             foreach (string val in rawVals)
@@ -241,12 +297,15 @@ public class T2IParamInput
         };
         PromptTagProcessors["alternate"] = (data, context) =>
         {
-            string separator = data.Contains("||") ? "||" : (data.Contains('|') ? "|" : ",");
-            string[] rawVals = data.Split(separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            string[] rawVals = SplitSmart(data);
             if (rawVals.Length == 0)
             {
-                Logs.Warning($"Alternate input '{data}' is empty and will be ignored.");
+                context.TrackWarning($"Alternate input '{data}' is empty and will be ignored.");
                 return null;
+            }
+            for (int i = 0; i < rawVals.Length; i++)
+            {
+                rawVals[i] = context.Parse(rawVals[i]);
             }
             return $"[{rawVals.JoinString("|")}]";
         };
@@ -258,15 +317,18 @@ public class T2IParamInput
             double? stepIndex = InterpretNumber(context.PreData);
             if (!stepIndex.HasValue)
             {
-                Logs.Warning($"FromTo input 'fromto[{context.PreData}]:{data}' has invalid predata step-index (not a number) and will be ignored.");
+                context.TrackWarning($"FromTo input 'fromto[{context.PreData}]:{data}' has invalid predata step-index (not a number) and will be ignored.");
                 return null;
             }
-            string separator = data.Contains("||") ? "||" : (data.Contains('|') ? "|" : ",");
-            string[] rawVals = data.Split(separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            string[] rawVals = SplitSmart(data);
             if (rawVals.Length != 2)
             {
-                Logs.Warning($"Alternate input '{data}' is invalid (len=${rawVals.Length}, should be 2) and will be ignored.");
+                context.TrackWarning($"FromTo input '{data}' is invalid (len={rawVals.Length}, should be 2) and will be ignored.");
                 return null;
+            }
+            for (int i = 0; i < rawVals.Length; i++)
+            {
+                rawVals[i] = context.Parse(rawVals[i]);
             }
             return $"[{rawVals.JoinString(":")}:{stepIndex}]";
         };
@@ -281,7 +343,7 @@ public class T2IParamInput
             string card = T2IParamTypes.GetBestInList(data, WildcardsHelper.ListFiles);
             if (card is null)
             {
-                Logs.Warning($"Wildcard input '{data}' does not match any wildcard file and will be ignored.");
+                context.TrackWarning($"Wildcard input '{data}' does not match any wildcard file and will be ignored.");
                 return null;
             }
             WildcardsHelper.Wildcard wildcard = WildcardsHelper.GetWildcard(card);
@@ -334,7 +396,7 @@ public class T2IParamInput
             double? countVal = InterpretNumber(count);
             if (!countVal.HasValue)
             {
-                Logs.Warning($"Repeat input '{data}' has invalid count (not a number) and will be ignored.");
+                context.TrackWarning($"Repeat input '{data}' has invalid count (not a number) and will be ignored.");
                 return null;
             }
             string result = "";
@@ -362,26 +424,28 @@ public class T2IParamInput
         };
         PromptTagProcessors["preset"] = (data, context) =>
         {
+            string param = context.Param;
             string name = context.Parse(data);
             T2IPreset preset = context.Input.SourceSession.User.GetPreset(name);
             if (preset is null)
             {
-                Logs.Warning($"Preset '{name}' does not exist and will be ignored.");
+                context.TrackWarning($"Preset '{name}' does not exist and will be ignored.");
                 return null;
             }
             preset.ApplyTo(context.Input);
-            if (preset.ParamMap.TryGetValue(context.Param, out string prompt))
+            if (preset.ParamMap.TryGetValue(param, out string prompt))
             {
                 return "\0preset:" + prompt;
             }
             return "";
         };
         PromptTagProcessors["p"] = PromptTagProcessors["preset"];
-        PromptTagLengthEstimators["preset"] = (data) =>
+        static string estimateEmpty(string data)
         {
             return "";
-        };
-        PromptTagLengthEstimators["p"] = PromptTagLengthEstimators["preset"];
+        }
+        PromptTagLengthEstimators["preset"] = estimateEmpty;
+        PromptTagLengthEstimators["p"] = estimateEmpty;
         PromptTagProcessors["embed"] = (data, context) =>
         {
             data = context.Parse(data);
@@ -390,11 +454,18 @@ public class T2IParamInput
             string matched = T2IParamTypes.GetBestModelInList(want, context.Embeds);
             if (matched is null)
             {
-                Logs.Warning($"Embedding '{want}' does not exist and will be ignored.");
+                context.TrackWarning($"Embedding '{want}' does not exist and will be ignored.");
                 return "";
             }
-            List<string> usedEmbeds = context.Input.ExtraMeta.GetOrCreate("used_embeddings", () => new List<string>()) as List<string>;
-            usedEmbeds.Add(T2IParamTypes.CleanModelName(matched));
+            if (matched.Contains(' '))
+            {
+                context.TrackWarning($"Embedding model {matched} contains a space and will most likely not function as intended. Please remove spaces from the filename.");
+            }
+            else
+            {
+                List<string> usedEmbeds = context.Input.ExtraMeta.GetOrCreate("used_embeddings", () => new List<string>()) as List<string>;
+                usedEmbeds.Add(T2IParamTypes.CleanModelName(matched));
+            }
             return "\0swarmembed:" + matched + "\0end";
         };
         PromptTagProcessors["embedding"] = PromptTagProcessors["embed"];
@@ -412,7 +483,7 @@ public class T2IParamInput
             string matched = T2IParamTypes.GetBestModelInList(lora, context.Loras);
             if (matched is null)
             {
-                Logs.Warning($"Lora '{lora}' does not exist and will be ignored.");
+                context.TrackWarning($"Lora '{lora}' does not exist and will be ignored.");
                 return null;
             }
             List<string> loraList = context.Input.Get(T2IParamTypes.Loras) ?? [];
@@ -427,6 +498,12 @@ public class T2IParamInput
             weights.Add(strength.ToString());
             context.Input.Set(T2IParamTypes.Loras, loraList);
             context.Input.Set(T2IParamTypes.LoraWeights, weights);
+            string trigger = Program.T2IModelSets["LoRA"].GetModel(matched)?.Metadata?.TriggerPhrase;
+            if (!string.IsNullOrWhiteSpace(trigger))
+            {
+                context.TriggerPhraseExtra += $"{trigger}, ";
+                Logs.Verbose($"TriggerPhraseExtra is now {context.TriggerPhraseExtra}");
+            }
             if (confinements is null)
             {
                 confinements = [];
@@ -448,7 +525,7 @@ public class T2IParamInput
         };
         PromptTagPostProcessors["object"] = PromptTagPostProcessors["segment"];
         PromptTagPostProcessors["region"] = PromptTagPostProcessors["segment"];
-        PromptTagProcessors["break"] = (data, context) =>
+        PromptTagBasicProcessors["break"] = (data, context) =>
         {
             return "<break>";
         };
@@ -456,6 +533,66 @@ public class T2IParamInput
         {
             return "<break>";
         };
+        PromptTagLengthEstimators["embed"] = estimateEmpty;
+        PromptTagLengthEstimators["embedding"] = estimateEmpty;
+        PromptTagLengthEstimators["lora"] = estimateEmpty;
+        PromptTagProcessors["setvar"] = (data, context) =>
+        {
+            string name = context.PreData;
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                context.TrackWarning($"A variable name is required when using setvar.");
+                return null;
+            }
+            data = context.Parse(data);
+            context.Variables[name] = data;
+            return data;
+        };
+        PromptTagLengthEstimators["setvar"] = (data) =>
+        {
+            return ProcessPromptLikeForLength(data);
+        };
+        PromptTagProcessors["var"] = (data, context) =>
+        {
+            if (!context.Variables.TryGetValue(data, out string val))
+            {
+                context.TrackWarning($"Variable '{data}' is not recognized.");
+                return "";
+            }
+            return val;
+        };
+        PromptTagLengthEstimators["var"] = estimateEmpty;
+        PromptTagBasicProcessors["trigger"] = (data, context) =>
+        {
+            List<string> phrases = [];
+            void add(string str)
+            {
+                if (!string.IsNullOrWhiteSpace(str))
+                {
+                    phrases.Add(str);
+                }
+            }
+            add(context.Input.Get(T2IParamTypes.Model)?.Metadata?.TriggerPhrase);
+            if (context.Input.TryGet(T2IParamTypes.Loras, out List<string> loras))
+            {
+                context.Loras ??= [.. Program.T2IModelSets["LoRA"].ListModelNamesFor(context.Input.SourceSession)];
+                foreach (string lora in loras)
+                {
+                    string matched = T2IParamTypes.GetBestModelInList(lora, context.Loras);
+                    if (matched is not null)
+                    {
+                        add(Program.T2IModelSets["LoRA"].GetModel(matched)?.Metadata?.TriggerPhrase);
+                    }
+                }
+            }
+            if (phrases.Any() && string.IsNullOrWhiteSpace(context.TriggerPhraseExtra))
+            {
+                context.TriggerPhraseExtra = ", ";
+                Logs.Verbose("Added trigger phrase extra prefix");
+            }
+            return phrases.JoinString(", ") + "\0triggerextra";
+        };
+        PromptTagLengthEstimators["trigger"] = estimateEmpty;
         PromptTagLengthEstimators["embed"] = PromptTagLengthEstimators["preset"];
         PromptTagLengthEstimators["embedding"] = PromptTagLengthEstimators["preset"];
         PromptTagLengthEstimators["lora"] = PromptTagLengthEstimators["preset"];
@@ -545,6 +682,9 @@ public class T2IParamInput
 
     /// <summary>List of reasons this input did not match backend requests, if any.</summary>
     public HashSet<string> RefusalReasons = [];
+
+    /// <summary>Original seed the input had, before randomization handling.</summary>
+    public long? RawOriginalSeed;
 
     /// <summary>Construct a new parameter input handler for a session.</summary>
     public T2IParamInput(Session session)
@@ -692,6 +832,12 @@ public class T2IParamInput
     public string GenRawMetadata()
     {
         JObject obj = GenMetadataObject();
+        return MetadataToString(obj);
+    }
+
+    /// <summary>Converts a metadata JSON object to a string.</summary>
+    public static string MetadataToString(JObject obj)
+    {
         return JsonConvert.SerializeObject(new JObject() { ["sui_image_params"] = obj }, SafeSerializer).Replace("\r\n", "\n");
     }
 
@@ -764,7 +910,7 @@ public class T2IParamInput
         }
         string fixedVal = val.Replace('\0', '\a').Replace("\a", "");
         PromptTagContext context = new() { Input = this, Param = param.Type.ID };
-        fixedVal = ProcessPromptLike(fixedVal, context);
+        fixedVal = ProcessPromptLike(fixedVal, context, true);
         if (fixedVal != val && !ExtraMeta.ContainsKey($"original_{param.Type.ID}"))
         {
             ExtraMeta[$"original_{param.Type.ID}"] = val;
@@ -773,14 +919,14 @@ public class T2IParamInput
     }
 
     /// <summary>Special utility to process prompt inputs before the request is executed (to parse wildcards, embeddings, etc).</summary>
-    public string ProcessPromptLike(string val, PromptTagContext context)
+    public string ProcessPromptLike(string val, PromptTagContext context, bool isMain)
     {
         if (val is null)
         {
             return null;
         }
         string addBefore = "", addAfter = "";
-        void processSet(Dictionary<string, Func<string, PromptTagContext, string>> set)
+        void processSet(Dictionary<string, Func<string, PromptTagContext, string>> set, bool requireData)
         {
             val = StringConversionHelper.QuickSimpleTagFiller(val, "<", ">", tag =>
             {
@@ -794,7 +940,7 @@ public class T2IParamInput
                 context.RawCurrentTag = tag;
                 context.PreData = preData;
                 Logs.Verbose($"[Prompt Parsing] Found tag {val}, will fill... prefix = '{prefix}', data = '{data}', predata = '{preData}'");
-                if (!string.IsNullOrWhiteSpace(data) && set.TryGetValue(prefix, out Func<string, PromptTagContext, string> proc))
+                if ((!string.IsNullOrWhiteSpace(data) || !requireData) && set.TryGetValue(prefix, out Func<string, PromptTagContext, string> proc))
                 {
                     string result = proc(data, context);
                     if (result is not null)
@@ -816,15 +962,21 @@ public class T2IParamInput
                         return result;
                     }
                 }
-                else if (tag.ToLowerFast() == "break")
-                {
-                    return "<break>";
-                }
                 return $"<{tag}>";
             }, false, 0);
         }
-        processSet(PromptTagProcessors);
-        processSet(PromptTagPostProcessors);
+        processSet(PromptTagBasicProcessors, false);
+        processSet(PromptTagProcessors, true);
+        processSet(PromptTagPostProcessors, true);
+        if (isMain)
+        {
+            string triggerPhrase = context.TriggerPhraseExtra;
+            if (triggerPhrase.Length > 1) // trim the ", "
+            {
+                triggerPhrase = triggerPhrase[..^2];
+            }
+            val = val.Replace("\0triggerextra", triggerPhrase);
+        }
         return addBefore + val + addAfter;
     }
 
@@ -844,7 +996,7 @@ public class T2IParamInput
                 {
                     (prefix, preData) = prefix.BeforeLast(']').BeforeAndAfter('[');
                 }
-                if (!string.IsNullOrWhiteSpace(data) && set.TryGetValue(prefix, out Func<string, string> proc))
+                if (set.TryGetValue(prefix, out Func<string, string> proc))
                 {
                     string result = proc(data);
                     if (result is not null)

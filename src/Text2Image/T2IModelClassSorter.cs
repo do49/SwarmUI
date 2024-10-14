@@ -2,7 +2,6 @@
 using Newtonsoft.Json.Linq;
 using SwarmUI.Core;
 using SwarmUI.Utils;
-using System.IO;
 
 namespace SwarmUI.Text2Image;
 
@@ -11,6 +10,9 @@ public class T2IModelClassSorter
 {
     /// <summary>All known model classes.</summary>
     public static Dictionary<string, T2IModelClass> ModelClasses = [];
+
+    /// <summary>Remaps for known typos or alternate labelings.</summary>
+    public static Dictionary<string, string> Remaps = [];
 
     /// <summary>Register a new model class to the sorter.</summary>
     public static void Register(T2IModelClass clazz)
@@ -151,7 +153,7 @@ public class T2IModelClassSorter
             return isSVD(h);
         }});
         // ====================== Stable Cascade ======================
-        Register(new() { ID = "stable-cascade-v1-stage-a", CompatClass = "stable-cascade-v1", Name = "Stable Cascade v1 (Stage A)", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) =>
+        Register(new() { ID = "stable-cascade-v1-stage-a/vae", CompatClass = "stable-cascade-v1", Name = "Stable Cascade v1 (Stage A)", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) =>
         {
              return isCascadeA(h) && !isCascadeB(h) && !isCascadeC(h);
         }});
@@ -175,27 +177,52 @@ public class T2IModelClassSorter
         Register(new() { ID = "stable-diffusion-v3-medium/controlnet", CompatClass = "stable-diffusion-v3-medium", Name = "Stable Diffusion 3 Medium ControlNet", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) =>
         {
             return isSD3Cnet(h);
-        }
-        });
+        }});
         // ====================== BFL Flux.1 ======================
-        Register(new() { ID = "Flux.1-AE", CompatClass = "flux-1", Name = "Flux.1 Autoencoder", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) => { return false; } });
+        Register(new() { ID = "flux.1/vae", CompatClass = "flux-1", Name = "Flux.1 Autoencoder", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) => { return false; } });
         Register(new() { ID = "Flux.1-schnell", CompatClass = "flux-1", Name = "Flux.1 Schnell", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) =>
         {
-            return h.ContainsKey("double_blocks.0.img_attn.norm.key_norm.scale") && !h.ContainsKey("guidance_in.in_layer.bias");
-        }
-        });
+            return (h.ContainsKey("double_blocks.0.img_attn.norm.key_norm.scale") && !h.ContainsKey("guidance_in.in_layer.bias")) // 'unet'
+                || (h.ContainsKey("model.diffusion_model.double_blocks.0.img_attn.norm.key_norm.scale") && !h.ContainsKey("model.diffusion_model.guidance_in.in_layer.bias")); // 'checkpoint'
+        }});
         Register(new() { ID = "Flux.1-dev", CompatClass = "flux-1", Name = "Flux.1 Dev", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) =>
         {
-            return h.ContainsKey("double_blocks.0.img_attn.norm.key_norm.scale") && h.ContainsKey("guidance_in.in_layer.bias");
+            return (h.ContainsKey("double_blocks.0.img_attn.norm.key_norm.scale") && h.ContainsKey("guidance_in.in_layer.bias")) // 'unet'
+                || h.ContainsKey("model.diffusion_model.double_blocks.0.img_attn.norm.key_norm.scale") && h.ContainsKey("model.diffusion_model.guidance_in.in_layer.bias"); // 'checkpoint'
         }});
         Register(new() { ID = "Flux.1-dev/lora", CompatClass = "flux-1", Name = "Flux.1 LoRA", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) =>
         {
-            return h.ContainsKey("diffusion_model.double_blocks.0.img_attn.proj.lora_down.weight");
+            // some models only have some but not all blocks, so...
+            for (int i = 0; i < 22; i++)
+            {
+                // All of these examples seen in the way - so many competing LoRA formats for flux, wtf.
+                if (h.ContainsKey($"diffusion_model.double_blocks.{i}.img_attn.proj.lora_down.weight")
+                    || h.ContainsKey($"model.diffusion_model.double_blocks.{i}.img_attn.proj.lora_down.weight")
+                    || h.ContainsKey($"lora_unet_double_blocks_{i}_img_attn_proj.lora_down.weight")
+                    || h.ContainsKey($"lora_unet_single_blocks_{i}_linear1.lora_down.weight")
+                    || h.ContainsKey($"lora_transformer_single_transformer_blocks_{i}_attn_to_k.lora_down.weight")
+                    || h.ContainsKey($"transformer.single_transformer_blocks.{i}.attn.to_k.lora_A.weight")
+                    || h.ContainsKey($"transformer.single_transformer_blocks.{i}.proj_out.lora_A.weight"))
+                {
+                    return true;
+                }
+            }
+            return false;
         }});
         Register(new() { ID = "Flux.1-dev/controlnet", CompatClass = "flux-1", Name = "Flux.1 ControlNet", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) =>
         {
             return false;
         }});
+        Remaps["flux-1-dev"] = "Flux.1-dev";
+        Remaps["flux-1-dev/lora"] = "Flux.1-dev/lora";
+        Remaps["flux-1-dev/controlnet"] = "Flux.1-dev/controlnet";
+        Remaps["flux-1-schnell"] = "Flux.1-schnell";
+        Remaps["flux-1-schnell/lora"] = "Flux.1-dev/lora";
+        Remaps["flux-1-schnell/controlnet"] = "Flux.1-dev/controlnet";
+        Remaps["Flux.1-schnell/lora"] = "Flux.1-dev/lora";
+        Remaps["Flux.1-schnell/controlnet"] = "Flux.1-dev/controlnet";
+        Remaps["Flux.1-AE"] = "flux.1/vae";
+        Remaps["stable-cascade-v1-stage-a"] = "stable-cascade-v1-stage-a/vae";
         // ====================== Random Other Models ======================
         Register(new() { ID = "alt_diffusion_v1_512_placeholder", CompatClass = "alt_diffusion_v1", Name = "Alt-Diffusion", StandardWidth = 512, StandardHeight = 512, IsThisModelOfClass = (m, h) =>
         {
@@ -227,8 +254,8 @@ public class T2IModelClassSorter
         // Other model classes
         Register(new() { ID = "pixart-ms-sigma-xl-2", CompatClass = "pixart-ms-sigma-xl-2", Name = "PixArtMS Sigma XL 2", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) => { return false; } });
         Register(new() { ID = "pixart-ms-sigma-xl-2-2k", CompatClass = "pixart-ms-sigma-xl-2", Name = "PixArtMS Sigma XL 2 (2K)", StandardWidth = 2048, StandardHeight = 2048, IsThisModelOfClass = (m, h) => { return false; } });
-        Register(new() { ID = "auraflow-v1", CompatClass = "auraflow-v1", Name = "(Temporary) AuraFlow", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) => { return false; } });
-        Register(new() { ID = "auraflow-v1/tensorrt", CompatClass = "auraflow-v1", Name = "(Temporary) AuraFlow (TensorRT Engine)", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) => { return false; } });
+        Register(new() { ID = "auraflow-v1", CompatClass = "auraflow-v1", Name = "AuraFlow", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) => { return false; } });
+        Register(new() { ID = "auraflow-v1/tensorrt", CompatClass = "auraflow-v1", Name = "AuraFlow (TensorRT Engine)", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) => { return false; } });
     }
 
     /// <summary>Returns the model class that matches this model, or null if none.</summary>
@@ -238,13 +265,25 @@ public class T2IModelClassSorter
         {
             return model.ModelClass;
         }
-        string arch = header?["__metadata__"]?.Value<string>("modelspec.architecture") ?? header?["__metadata__"]?.Value<string>("architecture") ?? header.Value<string>("architecture");
+        // "ot" trained loras seem to emit empty strings?! why god. Argh.
+        static string fix(string s) => string.IsNullOrWhiteSpace(s) ? null : s;
+        string arch = fix(header?["__metadata__"]?.Value<string>("modelspec.architecture"))
+            ?? fix(header?["__metadata__"]?.Value<string>("architecture"))
+            ?? fix(header.Value<string>("modelspec.architecture"))
+            ?? fix(header.Value<string>("architecture"));
         if (arch is not null)
         {
-            string res = header["__metadata__"]?.Value<string>("modelspec.resolution") ?? header["__metadata__"]?.Value<string>("resolution") ?? header.Value<string>("resolution");
+            string res = fix(header["__metadata__"]?.Value<string>("modelspec.resolution"))
+                ?? fix(header["__metadata__"]?.Value<string>("resolution"))
+                ?? fix(header.Value<string>("modelspec.resolution"))
+                ?? fix(header.Value<string>("resolution"));
             string h = null;
             int width = string.IsNullOrWhiteSpace(res) ? 0 : int.Parse(res.BeforeAndAfter('x', out h));
             int height = string.IsNullOrWhiteSpace(h) ? 0 : int.Parse(h);
+            if (Remaps.TryGetValue(arch, out string remapTo))
+            {
+                arch = remapTo;
+            }
             if (ModelClasses.TryGetValue(arch, out T2IModelClass clazz))
             {
                 if ((width == clazz.StandardWidth && height == clazz.StandardHeight) || (width <= 0 && height <= 0))

@@ -4,11 +4,13 @@ let cur_model = null;
 let curModelWidth = 0, curModelHeight = 0;
 let curModelArch = '';
 let curModelCompatClass = '';
+let curModelSpecialFormat = '';
 let curWildcardMenuWildcard = null;
 let curModelMenuModel = null;
 let curModelMenuBrowser = null;
 let loraWeightPref = {};
 let allWildcards = [];
+let nativelySupportedModelExtensions = ["safetensors", "sft", "engine", "gguf"];
 
 function test_wildcard_again() {
     let card = curWildcardMenuWildcard;
@@ -117,6 +119,51 @@ function close_edit_wildcard() {
     $('#edit_wildcard_modal').modal('hide');
 }
 
+function editModelGetHashNow() {
+    if (curModelMenuModel == null) {
+        return;
+    }
+    let model = curModelMenuModel;
+    genericRequest('GetModelHash', { 'modelName': curModelMenuModel.name, 'subtype': curModelMenuBrowser.subType }, data => {
+        model.hash = data.hash;
+        if (curModelMenuModel == model) {
+            editModelFillTechnicalInfo(curModelMenuModel);
+        }
+    });
+}
+
+function editModelFillTechnicalInfo(model) {
+    let technical = `${translate('Created')}: ${escapeHtml(formatDateTime(new Date(model.time_created)))}\n<br>${translate('Modified')}: ${escapeHtml(formatDateTime(new Date(model.time_modified)))}`;
+    if (model.hash) {
+        technical += `\n<br>${translate('Hash')}: ${escapeHtml(model.hash)}`;
+    }
+    else {
+        technical += `\n<br>${translate('Hash')}: ${translate('(Not available)')} <button class="btn btn-primary basic-button small-button translate" onclick="editModelGetHashNow()" title="Scan the file data and build a hash, then update its value into the model metadata">${translate('Load Hash')}</button>`;
+    }
+    getRequiredElementById('edit_model_technical_data').innerHTML = technical;
+}
+
+/** Returns either the expected CivitAI url for a model, or empty string if unknown. */
+function getCivitUrlGuessFor(model) {
+    if (!model.description) {
+        return '';
+    }
+    let civitUrl = '';
+    // (Hacky but we don't have a dedicated datastore for this, just included at the top of descriptions generally)
+    let civitUrlStartIndex = model.description.indexOf('<a href="https://civitai.com/models/');
+    if (civitUrlStartIndex != -1) {
+        let end = model.description.indexOf('"', civitUrlStartIndex + '<a href="'.length);
+        if (end != -1) {
+            civitUrl = model.description.substring(civitUrlStartIndex + '<a href="'.length, end);
+            if (!civitUrl.includes("?modelVersionId=") || civitUrl.length > 200) {
+                console.log(`Invalid CivitAI URL (failed sanity check): ${civitUrl}`);
+                civitUrl = '';
+            }
+        }
+    }
+    return civitUrl;
+}
+
 function editModel(model, browser) {
     if (model == null) {
         return;
@@ -142,13 +189,22 @@ function editModel(model, browser) {
         }
         enableImage.disabled = false;
     }
-    let technical = `Created: ${formatDateTime(new Date(model.time_created))}\nModified: ${formatDateTime(new Date(model.time_modified))}`;
-    if (model.hash) {
-        technical += `\nHash: ${model.hash}`;
-    }
-    getRequiredElementById('edit_model_technical_data').innerText = technical;
+    editModelFillTechnicalInfo(model);
+    getRequiredElementById('edit_model_civitai_url').value = getCivitUrlGuessFor(model);
+    getRequiredElementById('edit_model_civitai_info').innerText = '';
     getRequiredElementById('edit_model_name').value = model.title || model.name;
-    getRequiredElementById('edit_model_type').value = model.architecture || '';
+    let modelTypeSelector = getRequiredElementById('edit_model_type');
+    modelTypeSelector.value = model.architecture || '';
+    for (let opt of modelTypeSelector.options) {
+        let slash = opt.value.indexOf('/');
+        let postSlash = slash > 0 ? opt.value.substring(slash + 1) : '';
+        if (opt.value == model.architecture || browser.subIds.includes(postSlash)) {
+            opt.style.display = 'block';
+        }
+        else {
+            opt.style.display = 'none';
+        }
+    }
     getRequiredElementById('edit_model_prediction_type').value = model.prediction_type || '';
     getRequiredElementById('edit_model_resolution').value = `${model.standard_width}x${model.standard_height}`;
     for (let val of ['description', 'author', 'usage_hint', 'date', 'license', 'trigger_phrase', 'tags']) {
@@ -163,7 +219,25 @@ function edit_model_load_civitai() {
     let url = getRequiredElementById('edit_model_civitai_url').value;
     let info = getRequiredElementById('edit_model_civitai_info');
     if (!url) {
-        info.innerText = 'No URL provided.';
+        let model = curModelMenuModel;
+        info.innerText = 'Loading hash...';
+        genericRequest('GetModelHash', { 'modelName': curModelMenuModel.name, 'subtype': curModelMenuBrowser.subType }, data => {
+            model.hash = data.hash;
+            if (curModelMenuModel == model) {
+                editModelFillTechnicalInfo(curModelMenuModel);
+                info.innerText = 'Hash loaded, searching civitai...';
+                modelDownloader.searchCivitaiForHash(model.hash, (url) => {
+                    if (url) {
+                        info.innerText = 'URL found, loading...';
+                        getRequiredElementById('edit_model_civitai_url').value = url;
+                        edit_model_load_civitai();
+                    }
+                    else {
+                        info.innerText = 'No CivitAI URL found for this model hash.';
+                    }
+                });
+            }
+        });
         return;
     }
     let [id, versId] = modelDownloader.parseCivitaiUrl(url);
@@ -300,8 +374,9 @@ function sortModelLocal(a, b, files) {
 }
 
 class ModelBrowserWrapper {
-    constructor(subType, container, id, selectOne, extraHeader = '') {
+    constructor(subType, subIds, container, id, selectOne, extraHeader = '') {
         this.subType = subType;
+        this.subIds = subIds;
         this.selectOne = selectOne;
         let format = subType == 'Wildcards' ? 'Small Cards' : 'Cards';
         extraHeader += `<label for="models_${subType}_sort_by">Sort:</label> <select id="models_${subType}_sort_by"><option>Name</option><option>Title</option><option>DateCreated</option><option>DateModified</option></select> <input type="checkbox" id="models_${subType}_sort_reverse"> <label for="models_${subType}_sort_reverse">Reverse</label>`;
@@ -335,7 +410,7 @@ class ModelBrowserWrapper {
             }
         }
         let prefix = path == '' ? '' : (path.endsWith('/') ? path : `${path}/`);
-        genericRequest('ListModels', {'path': path, 'depth': depth, 'subtype': this.subType, 'sortBy': sortBy, 'sortReverse': reverse}, data => {
+        genericRequest('ListModels', {'path': path, 'depth': Math.round(depth), 'subtype': this.subType, 'sortBy': sortBy, 'sortReverse': reverse}, data => {
             let files = data.files.sort((a,b) => sortModelLocal(a, b, data.files)).map(f => { return { 'name': f.name, 'data': f }; });
             for (let file of files) {
                 file.data.display = cleanModelName(file.data.name.substring(prefix.length));
@@ -379,6 +454,9 @@ class ModelBrowserWrapper {
             if (fix) {
                 fix();
             }
+        }, 0, e => {
+            showError(`Failed to list models: ${e}`);
+            callback([], []);
         });
     }
 
@@ -389,6 +467,9 @@ class ModelBrowserWrapper {
         if (this.subType == 'Stable-Diffusion' && model.data.local) {
             let buttonLoad = () => {
                 directSetModel(model.data);
+                if (doModelInstallRequiredCheck()) {
+                    return;
+                }
                 makeWSRequestT2I('SelectModelWS', {'model': model.data.name}, data => {
                     this.browser.navigate(lastModelDir);
                 });
@@ -510,12 +591,12 @@ class ModelBrowserWrapper {
     }
 }
 
-let sdModelBrowser = new ModelBrowserWrapper('Stable-Diffusion', 'model_list', 'modelbrowser', (model) => { directSetModel(model.data); });
-let sdVAEBrowser = new ModelBrowserWrapper('VAE', 'vae_list', 'sdvaebrowser', (vae) => { directSetVae(vae.data); });
-let sdLoraBrowser = new ModelBrowserWrapper('LoRA', 'lora_list', 'sdlorabrowser', (lora) => { toggleSelectLora(cleanModelName(lora.data.name)); });
-let sdEmbedBrowser = new ModelBrowserWrapper('Embedding', 'embedding_list', 'sdembedbrowser', (embed) => { selectEmbedding(embed.data); });
-let sdControlnetBrowser = new ModelBrowserWrapper('ControlNet', 'controlnet_list', 'sdcontrolnetbrowser', (controlnet) => { setControlNet(controlnet.data); });
-let wildcardsBrowser = new ModelBrowserWrapper('Wildcards', 'wildcard_list', 'wildcardsbrowser', (wildcard) => { selectWildcard(wildcard.data); }, `<button id="wildcards_list_create_new_button" class="refresh-button" onclick="create_new_wildcard_button()">Create New Wildcard</button>`);
+let sdModelBrowser = new ModelBrowserWrapper('Stable-Diffusion', ['', 'inpaint', 'tensorrt'], 'model_list', 'modelbrowser', (model) => { directSetModel(model.data); });
+let sdVAEBrowser = new ModelBrowserWrapper('VAE', ['vae'], 'vae_list', 'sdvaebrowser', (vae) => { directSetVae(vae.data); });
+let sdLoraBrowser = new ModelBrowserWrapper('LoRA', ['lora'], 'lora_list', 'sdlorabrowser', (lora) => { toggleSelectLora(cleanModelName(lora.data.name)); });
+let sdEmbedBrowser = new ModelBrowserWrapper('Embedding', ['embedding', 'textual-inversion'], 'embedding_list', 'sdembedbrowser', (embed) => { selectEmbedding(embed.data); });
+let sdControlnetBrowser = new ModelBrowserWrapper('ControlNet', ['controlnet', 'control-lora'], 'controlnet_list', 'sdcontrolnetbrowser', (controlnet) => { setControlNet(controlnet.data); });
+let wildcardsBrowser = new ModelBrowserWrapper('Wildcards', [], 'wildcard_list', 'wildcardsbrowser', (wildcard) => { selectWildcard(wildcard.data); }, `<button id="wildcards_list_create_new_button" class="refresh-button" onclick="create_new_wildcard_button()">Create New Wildcard</button>`);
 
 let allModelBrowsers = [sdModelBrowser, sdVAEBrowser, sdLoraBrowser, sdEmbedBrowser, sdControlnetBrowser, wildcardsBrowser];
 
@@ -525,18 +606,28 @@ function matchWildcard(prompt, wildcard) {
 }
 
 function selectWildcard(model) {
-    let promptBox = getRequiredElementById('alt_prompt_textbox');
-    let trimmed = promptBox.value.trim();
+    let [promptBox, cursorPos] = uiImprover.getLastSelectedTextbox();
+    if (!promptBox) {
+        promptBox = getRequiredElementById('alt_prompt_textbox');
+        cursorPos = promptBox.value.length;
+    }
+    let prefix = promptBox.value.substring(0, cursorPos);
+    let suffix = promptBox.value.substring(cursorPos);
+    let trimmed = prefix.trim();
     let match = matchWildcard(trimmed, model.name);
     if (match && match.length > 0) {
         let last = match[match.length - 1];
         if (trimmed.endsWith(last.trim())) {
-            promptBox.value = trimmed.substring(0, trimmed.length - last.length).trim();
+            promptBox.value = (trimmed.substring(0, trimmed.length - last.length).trim() + ' ' + suffix).trim();
             triggerChangeFor(promptBox);
             return;
         }
     }
-    promptBox.value = `${trimmed} <wildcard:${model.name}>`.trim();
+    let wildcardText = `<wildcard:${model.name}>`;
+    promptBox.value = `${prefix.trim()} ${wildcardText} ${suffix.trim()}`.trim();
+    promptBox.selectionStart = cursorPos + wildcardText.length + 1;
+    promptBox.selectionEnd = cursorPos + wildcardText.length + 1;
+    promptBox.focus();
     triggerChangeFor(promptBox);
 }
 
@@ -731,21 +822,23 @@ function directSetModel(model) {
         let clean = cleanModelName(model.name);
         forceSetDropdownValue('input_model', clean);
         forceSetDropdownValue('current_model', clean);
-        setCookie('selected_model', `${clean},${model.standard_width},${model.standard_height},${model.architecture},${model.compat_class}`, 90);
+        setCookie('selected_model', `${clean},${model.standard_width},${model.standard_height},${model.architecture},${model.compat_class},${model.special_format}`, 90);
         curModelWidth = model.standard_width;
         curModelHeight = model.standard_height;
         curModelArch = model.architecture;
         curModelCompatClass = model.compat_class;
+        curModelSpecialFormat = model.special_format;
     }
     else if (model.includes(',')) {
-        let [name, width, height, arch, compatClass] = model.split(',');
+        let [name, width, height, arch, compatClass, specialFormat] = model.split(',');
         forceSetDropdownValue('input_model', name);
         forceSetDropdownValue('current_model', name);
-        setCookie('selected_model', `${name},${width},${height},${arch},${compatClass}`, 90);
+        setCookie('selected_model', `${name},${width},${height},${arch},${compatClass},${specialFormat}`, 90);
         curModelWidth = parseInt(width);
         curModelHeight = parseInt(height);
         curModelArch = arch;
         curModelCompatClass = compatClass;
+        curModelSpecialFormat = specialFormat;
     }
     reviseBackendFeatureSet();
     getRequiredElementById('input_model').dispatchEvent(new Event('change'));
@@ -850,6 +943,18 @@ function currentModelChanged() {
         directSetModel(data.model);
         noModelChangeDup = false;
     });
+}
+
+function doModelInstallRequiredCheck() {
+    if (curModelSpecialFormat == 'bnb_nf4' && !currentBackendFeatureSet.includes('bnb_nf4') && !localStorage.getItem('hide_bnb_nf4_check')) {
+        $('#bnb_nf4_installer').modal('show');
+        return true;
+    }
+    if (curModelSpecialFormat == 'gguf' && !currentBackendFeatureSet.includes('gguf') && !localStorage.getItem('hide_gguf_check')) {
+        $('#gguf_installer').modal('show');
+        return true;
+    }
+    return false;
 }
 
 getRequiredElementById('current_model').addEventListener('change', currentModelChanged);

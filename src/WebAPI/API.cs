@@ -124,7 +124,8 @@ public class API
             JObject output = await handler.Call(context, session, socket, input);
             if (socket is not null)
             {
-                await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, Utilities.TimedCancel(TimeSpan.FromMinutes(1)));
+                using CancellationTokenSource cancel = Utilities.TimedCancel(TimeSpan.FromMinutes(1));
+                await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, cancel.Token);
                 return;
             }
             if (output is null)
@@ -142,7 +143,7 @@ public class API
                 Error($"Remote WebSocket disconnected unexpectedly (ConnectionClosedPrematurely). Did your browser crash while generating?");
                 return;
             }
-            Error($"Internal exception: {ex}");
+            Error($"Internal exception: {ex.ReadableString()}");
             if (socket is null)
             {
                 context.Response.Redirect("/Error/Internal");
@@ -150,7 +151,8 @@ public class API
             }
             try
             {
-                await socket.CloseAsync(WebSocketCloseStatus.InternalServerError, null, Utilities.TimedCancel(TimeSpan.FromMinutes(1)));
+                using CancellationTokenSource cancel = Utilities.TimedCancel(TimeSpan.FromMinutes(1));
+                await socket.CloseAsync(WebSocketCloseStatus.InternalServerError, null, cancel.Token);
                 return;
             }
             catch (Exception ex2)
@@ -188,7 +190,7 @@ public class API
         }
         if (t.IsFaulted)
         {
-            Logs.Error($"Error in websocket handler: {t.Exception}");
+            Logs.Error($"Error in websocket handler: {t.Exception.ReadableString()}");
         }
     }
 

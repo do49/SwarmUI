@@ -56,7 +56,7 @@ public static class Utilities
             }
             catch (Exception ex)
             {
-                Logs.Error($"Tick loop encountered exception: {ex}");
+                Logs.Error($"Tick loop encountered exception: {ex.ReadableString()}");
             }
         }
     }
@@ -174,15 +174,16 @@ public static class Utilities
     }
 
     /// <summary>Gets a convenient cancel token that cancels itself after a given time OR the program itself is cancelled.</summary>
-    public static CancellationToken TimedCancel(TimeSpan time)
+    public static CancellationTokenSource TimedCancel(TimeSpan time)
     {
-        return CancellationTokenSource.CreateLinkedTokenSource(Program.GlobalProgramCancel, new CancellationTokenSource(time).Token).Token;
+        return CancellationTokenSource.CreateLinkedTokenSource(Program.GlobalProgramCancel, new CancellationTokenSource(time).Token);
     }
 
     /// <summary>Send JSON data to a WebSocket.</summary>
     public static async Task SendJson(this WebSocket socket, JObject obj, TimeSpan maxDuration)
     {
-        await socket.SendAsync(obj.ToString(Formatting.None).EncodeUTF8(), WebSocketMessageType.Text, true, TimedCancel(maxDuration));
+        using CancellationTokenSource cancel = TimedCancel(maxDuration);
+        await socket.SendAsync(obj.ToString(Formatting.None).EncodeUTF8(), WebSocketMessageType.Text, true, cancel.Token);
     }
 
     /// <summary>Equivalent to <see cref="Task.WhenAny(IEnumerable{Task})"/> but doesn't break on an empty list.</summary>
@@ -227,7 +228,8 @@ public static class Utilities
     /// <summary>Receive raw binary data from a WebSocket.</summary>
     public static async Task<byte[]> ReceiveData(this WebSocket socket, TimeSpan maxDuration, int maxBytes)
     {
-        return await ReceiveData(socket, maxBytes, TimedCancel(maxDuration));
+        using CancellationTokenSource cancel = TimedCancel(maxDuration);
+        return await ReceiveData(socket, maxBytes, cancel.Token);
     }
 
     /// <summary>Receive JSON data from a WebSocket.</summary>
@@ -327,7 +329,8 @@ public static class Utilities
         if (socket != null)
         {
             await socket.SendJson(obj, TimeSpan.FromMinutes(1));
-            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, TimedCancel(TimeSpan.FromMinutes(1)));
+            using CancellationTokenSource cancel = TimedCancel(TimeSpan.FromMinutes(1));
+            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, cancel.Token);
             return;
         }
         byte[] resp = obj.ToString(Formatting.None).EncodeUTF8();
@@ -457,7 +460,7 @@ public static class Utilities
             }
             catch (Exception ex)
             {
-                Logs.Error($"Internal error in async task: {ex}");
+                Logs.Error($"Internal error in async task: {ex.ReadableString()}");
             }
         });
     }
@@ -472,7 +475,7 @@ public static class Utilities
             }
             catch (Exception ex)
             {
-                Logs.Error($"Internal error in async task: {ex}");
+                Logs.Error($"Internal error in async task: {ex.ReadableString()}");
             }
         });
     }
@@ -775,7 +778,7 @@ public static class Utilities
         }
         catch (Exception ex)
         {
-            Logs.Debug($"Failed to remove bad pycache from {path}: {ex}");
+            Logs.Debug($"Failed to remove bad pycache from {path}: {ex.ReadableString()}");
         }
     }
 
@@ -800,7 +803,7 @@ public static class Utilities
         }
         catch (Exception ex)
         {
-            Logs.Debug($"Failed to get local IP address: {ex}");
+            Logs.Debug($"Failed to get local IP address: {ex.ReadableString()}");
         }
         return null;
     }
@@ -837,7 +840,7 @@ public static class Utilities
             }
             catch (Exception ex)
             {
-                Logs.Debug($"Failed to check dotnet version: {ex}");
+                Logs.Debug($"Failed to check dotnet version: {ex.ReadableString()}");
             }
         });
     }
@@ -846,7 +849,7 @@ public static class Utilities
     public static MultiSemaphoreSet<string> GitOverlapLocks = new(32);
 
     /// <summary>Launch, run, and return the text output of, a 'git' command input.</summary>
-    public static async Task<string> RunGitProcess(string args, string dir = null)
+    public static async Task<string> RunGitProcess(string args, string dir = null, bool canRetry = true)
     {
         dir ??= Environment.CurrentDirectory;
         dir = Path.GetFullPath(dir);
@@ -862,15 +865,28 @@ public static class Utilities
         try
         {
             Process p = Process.Start(start);
+            Task<string> stdOutRead = p.StandardOutput.ReadToEndAsync();
+            Task<string> stdErrRead = p.StandardError.ReadToEndAsync();
             async Task<string> result()
             {
-                string stdout = await p.StandardOutput.ReadToEndAsync();
-                string stderr = await p.StandardError.ReadToEndAsync();
+                string stdout = await stdOutRead;
+                string stderr = await stdErrRead;
+                string result = stdout;
                 if (!string.IsNullOrWhiteSpace(stderr))
                 {
-                    return $"{stdout}\n{stderr}";
+                    result = $"{stdout}\n{stderr}";
                 }
-                return stdout;
+                result = result.Trim();
+                if (canRetry && result.Contains("detected dubious ownership in repository at") && result.Contains("git config --global --add safe.directory"))
+                {
+                    Logs.Warning($"Git process '{args}' in '{dir}' had a safe.directory warning, will try to autofix -- {result}");
+                    semaphore.Release();
+                    semaphore = null;
+                    string safeDirResponse = await RunGitProcess($"config --global --add safe.directory {dir}", dir, false);
+                    Logs.Debug($"Git Safe.Directory response: {safeDirResponse}");
+                    result = await RunGitProcess(args, dir, false);
+                }
+                return result;
             }
             Task exitTask = p.WaitForExitAsync(Program.GlobalProgramCancel);
             Task finished = await Task.WhenAny(exitTask, Task.Delay(TimeSpan.FromMinutes(1)));
@@ -900,7 +916,7 @@ public static class Utilities
         }
         finally
         {
-            semaphore.Release();
+            semaphore?.Release();
         }
     }
 
@@ -913,8 +929,22 @@ public static class Utilities
         }
         catch (Exception ex)
         {
-            Logs.Debug($"Failed to send file to recycle bin: {ex}");
+            Logs.Debug($"Failed to send file to recycle bin: {ex.ReadableString()}");
             File.Delete(file);
         }
+    }
+
+    /// <summary>Gets an appropriately readable exception message string, showing the stacktrace for internal errors.</summary>
+    public static string ReadableString(this Exception ex)
+    {
+        if (ex is SwarmReadableErrorException)
+        {
+            return ex.Message;
+        }
+        else if (ex is AggregateException ae && ae.InnerException is SwarmReadableErrorException inner)
+        {
+            return inner.Message;
+        }
+        return $"{ex}";
     }
 }

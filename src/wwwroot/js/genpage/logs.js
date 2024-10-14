@@ -11,10 +11,37 @@ class ServerLogsHelper {
         this.typeSelectors = getRequiredElementById('server_log_type_selector');
         this.actualLogContainer = getRequiredElementById('server_logs_container');
         this.filterInput = getRequiredElementById('server_log_filter');
+        this.pastebinButton = getRequiredElementById('server_log_pastebin');
+        this.pastebinButton.addEventListener('click', () => this.doPastebinModal());
+        this.pastebinSubmitButton = getRequiredElementById('log_submit_pastebin_button');
+        this.pastebinSubmitButton.addEventListener('click', () => this.pastebinSubmitNow());
+        this.pastebinCancelButton = getRequiredElementById('log_cancel_pastebin_button');
+        this.pastebinResultArea = getRequiredElementById('log_pastebin_result_area');
+        this.pastebinLogTypeSelector = getRequiredElementById('log_pastebin_type');
         this.lastSeq = -1;
         this.logMessagesByType = {};
         this.lastBounce = 0;
         this.levels = ['Verbose', 'Debug', 'Info', 'Init', 'Warning', 'Error'];
+    }
+
+    doPastebinModal() {
+        $('#do_log_pastebin_modal').modal('show');
+        this.pastebinSubmitButton.disabled = false;
+        this.pastebinCancelButton.innerText = translate('Cancel');
+        this.pastebinResultArea.innerHTML = '';
+    }
+
+    pastebinSubmitNow() {
+        this.pastebinSubmitButton.disabled = true;
+        this.pastebinCancelButton.innerText = translate('Close');
+        this.pastebinResultArea.innerHTML = 'Submitting...';
+        genericRequest('LogSubmitToPastebin', { 'type': this.pastebinLogTypeSelector.value }, data => {
+            this.pastebinResultArea.innerHTML = `<br>Submitted as: <a href="${data.url}" target="_blank">${data.url}</a> (copy this link and paste it in the SwarmUI discord help-forum, alongside a description of your problem and any screenshots)`;
+        }, 0, e => {
+            this.pastebinResultArea.innerText = 'Failed to submit: ' + e;
+            this.pastebinSubmitButton.disabled = false;
+            this.pastebinCancelButton.innerText = translate('Cancel');
+        });
     }
 
     regenTypeListElem() {
@@ -98,11 +125,11 @@ class ServerLogsHelper {
         let filter = this.filterInput.value.toLowerCase();
         let selected = this.typeSelectors.value;
         let visibleTypes = this.getVisibleTypes();
+        let toRenderMessages = [];
         if (selected != this.lastVisibleType || filter != this.lastFilter) {
             this.lastVisibleType = selected;
             this.lastFilter = filter;
             this.actualLogContainer.innerHTML = '';
-            let toRenderMessages = [];
             for (let typeName of visibleTypes) {
                 let storedData = this.logMessagesByType[typeName];
                 if (!storedData) {
@@ -115,11 +142,6 @@ class ServerLogsHelper {
                     }
                 }
             }
-            toRenderMessages.sort((a, b) => a[0].sequence_id - b[0].sequence_id);
-            for (let [message, type] of toRenderMessages) {
-                this.actualLogContainer.innerHTML += this.htmlMessage(message, type, this.lastBounce);
-                this.lastBounce = (this.lastBounce + 1) % 2;
-            }
         }
         genericRequest('ListRecentLogMessages', { lastSeqId: this.lastSeq, types: visibleTypes, last_sequence_ids: lastSeqs }, (data) => {
             if (this.typeSelectors.value != selected) {
@@ -129,7 +151,6 @@ class ServerLogsHelper {
             this.regenTypeListElem();
             this.lastSeq = data.last_sequence_id;
             let wasScrolledDown = this.actualLogContainer.scrollTop + this.actualLogContainer.clientHeight >= this.actualLogContainer.scrollHeight;
-            let toRenderMessages = [];
             for (let typeNum in this.logTypes) {
                 let type = this.logTypes[typeNum];
                 let messages = data.data[type.name];

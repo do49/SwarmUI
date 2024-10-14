@@ -50,7 +50,7 @@ public class AutoWebUISelfStartBackend : AutoWebUIAPIAbstractBackend
                 return;
             }
         }
-        await NetworkBackendUtils.DoSelfStart(settings.StartScript, this, $"AutoWebUI-{BackendData.ID}", $"backend-{BackendData.ID}", settings.GPU_ID, settings.ExtraArgs + " --api --port={PORT}", InitInternal, (p, r) => { Port = p; RunningProcess = r; });
+        await NetworkBackendUtils.DoSelfStart(settings.StartScript, this, $"AutoWebUI-{BackendData.ID}", $"backend-{BackendData.ID}", $"{settings.GPU_ID}", settings.ExtraArgs + " --api --port={PORT}", InitInternal, (p, r) => { Port = p; RunningProcess = r; });
     }
 
     public override async Task Shutdown()
@@ -68,7 +68,7 @@ public class AutoWebUISelfStartBackend : AutoWebUIAPIAbstractBackend
         }
         catch (Exception ex)
         {
-            Logs.Error($"Error stopping Auto WebUI process: {ex}");
+            Logs.Error($"Error stopping Auto WebUI process: {ex.ReadableString()}");
         }
     }
 }

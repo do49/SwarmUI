@@ -34,8 +34,8 @@ public class Program
     /// <summary>Main Stable-Diffusion model tracker.</summary>
     public static T2IModelHandler MainSDModels => T2IModelSets["Stable-Diffusion"];
 
-    /// <summary>All extensions currently loaded.</summary>
-    public static List<Extension> Extensions = [];
+    /// <summary>The manager for SwarmUI extensions.</summary>
+    public static ExtensionsManager Extensions = new();
 
     /// <summary>Holder of server admin settings.</summary>
     public static Settings ServerSettings = new();
@@ -100,7 +100,7 @@ public class Program
         };
         List<Task> waitFor = [];
         //Utilities.CheckDotNet("8");
-        PrepExtensions();
+        Extensions.PrepExtensions();
         try
         {
             Logs.Init("Parsing command line...");
@@ -111,13 +111,13 @@ public class Program
                 return;
             }
             Logs.Init("Loading settings file...");
-            DataDir = Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, CommandLineFlags.GetValueOrDefault("data_dir", "Data"));
+            DataDir = Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, GetCommandLineFlag("data_dir", "Data"));
             SettingsFilePath = CommandLineFlags.GetValueOrDefault("settings_file", "Data/Settings.fds");
             LoadSettingsFile();
             // TODO: Legacy format patch from Alpha 0.5! Remove this before 1.0.
             if (ServerSettings.DefaultUser.FileFormat.ImageFormat == "jpg")
             {
-                  ServerSettings.DefaultUser.FileFormat.ImageFormat = "JPG";
+                ServerSettings.DefaultUser.FileFormat.ImageFormat = "JPG";
             }
             if (!LockSettings)
             {
@@ -168,7 +168,7 @@ public class Program
             }
             catch (Exception ex)
             {
-                Logs.Error($"Failed to get git commit date: {ex}");
+                Logs.Error($"Failed to get git commit date: {ex.ReadableString()}");
                 CurrentGitDate = "Git failed to load";
             }
         }));
@@ -188,7 +188,7 @@ public class Program
             }
         }));
         T2IModelClassSorter.Init();
-        RunOnAllExtensions(e => e.OnPreInit());
+        Extensions.RunOnAllExtensions(e => e.OnPreInit());
         timer.Check("Extension PreInit");
         Logs.Init("Prepping options...");
         BuildModelLists();
@@ -200,7 +200,7 @@ public class Program
         timer.Check("Prep Objects");
         Web.PreInit();
         timer.Check("Web PreInit");
-        RunOnAllExtensions(e => e.OnInit());
+        Extensions.RunOnAllExtensions(e => e.OnInit());
         timer.Check("Extensions Init");
         Utilities.PrepUtils();
         timer.Check("Prep Utils");
@@ -225,18 +225,19 @@ public class Program
         Web.Prep();
         timer.Check("Web prep");
         Logs.Init("Readying extensions for launch...");
-        RunOnAllExtensions(e => e.OnPreLaunch());
+        Extensions.RunOnAllExtensions(e => e.OnPreLaunch());
         timer.Check("Extensions pre-launch");
         Logs.Init("Launching server...");
         Web.Launch();
         timer.Check("Web launch");
         try
         {
-            Task.WaitAll([.. waitFor], Utilities.TimedCancel(TimeSpan.FromSeconds(5)));
+            using CancellationTokenSource cancel = Utilities.TimedCancel(TimeSpan.FromSeconds(5));
+            Task.WaitAll([.. waitFor], cancel.Token);
         }
         catch (Exception ex)
         {
-            Logs.Debug($"Startup tasks took too long: {ex}");
+            Logs.Debug($"Startup tasks took too long: {ex.ReadableString()}");
         }
         Task.Run(() =>
         {
@@ -261,7 +262,7 @@ public class Program
             }
             catch (Exception ex)
             {
-                Logs.Error($"Failed to launch mode '{LaunchMode}' (If this is a headless/server install, change 'LaunchMode' to 'none' in settings): {ex}");
+                Logs.Error($"Failed to launch mode '{LaunchMode}' (If this is a headless/server install, change 'LaunchMode' to 'none' in settings): {ex.ReadableString()}");
             }
         });
         Task.Run(async () =>
@@ -304,12 +305,22 @@ public class Program
         {
             Logs.Error($"Failed to create directories for models. You may need to check your ModelRoot or SDModelFolder settings. {ex.Message}");
         }
-        T2IModelSets["Stable-Diffusion"] = new() { ModelType = "Stable-Diffusion", FolderPaths = [Utilities.CombinePathWithAbsolute(modelRoot, ServerSettings.Paths.SDModelFolder), Utilities.CombinePathWithAbsolute(modelRoot, "tensorrt"), Utilities.CombinePathWithAbsolute(modelRoot, "unet")] };
-        T2IModelSets["VAE"] = new() { ModelType = "VAE", FolderPaths = [Utilities.CombinePathWithAbsolute(modelRoot, ServerSettings.Paths.SDVAEFolder)] };
-        T2IModelSets["LoRA"] = new() { ModelType = "LoRA", FolderPaths = [Utilities.CombinePathWithAbsolute(modelRoot, ServerSettings.Paths.SDLoraFolder)] };
-        T2IModelSets["Embedding"] = new() { ModelType = "Embedding", FolderPaths = [Utilities.CombinePathWithAbsolute(modelRoot, ServerSettings.Paths.SDEmbeddingFolder)] };
-        T2IModelSets["ControlNet"] = new() { ModelType = "ControlNet", FolderPaths = [Utilities.CombinePathWithAbsolute(modelRoot, ServerSettings.Paths.SDControlNetsFolder)] };
-        T2IModelSets["ClipVision"] = new() { ModelType = "ClipVision", FolderPaths = [Utilities.CombinePathWithAbsolute(modelRoot, ServerSettings.Paths.SDClipVisionFolder)] };
+        string[] buildPathList(string folder)
+        {
+            return [.. folder.Split(';').Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => Utilities.CombinePathWithAbsolute(modelRoot, p.Trim()))];
+        }
+        List<string> folderPaths = [.. buildPathList(ServerSettings.Paths.SDModelFolder).Concat([Utilities.CombinePathWithAbsolute(modelRoot, "tensorrt"), Utilities.CombinePathWithAbsolute(modelRoot, "diffusion_models")])];
+        string unetPath = Utilities.CombinePathWithAbsolute(modelRoot, "unet");
+        if (Directory.Exists(unetPath))
+        {
+            folderPaths.Add(unetPath);
+        }
+        T2IModelSets["Stable-Diffusion"] = new() { ModelType = "Stable-Diffusion", FolderPaths = [.. folderPaths] };
+        T2IModelSets["VAE"] = new() { ModelType = "VAE", FolderPaths = buildPathList(ServerSettings.Paths.SDVAEFolder) };
+        T2IModelSets["LoRA"] = new() { ModelType = "LoRA", FolderPaths = buildPathList(ServerSettings.Paths.SDLoraFolder) };
+        T2IModelSets["Embedding"] = new() { ModelType = "Embedding", FolderPaths = buildPathList(ServerSettings.Paths.SDEmbeddingFolder) };
+        T2IModelSets["ControlNet"] = new() { ModelType = "ControlNet", FolderPaths = buildPathList(ServerSettings.Paths.SDControlNetsFolder) };
+        T2IModelSets["ClipVision"] = new() { ModelType = "ClipVision", FolderPaths = buildPathList(ServerSettings.Paths.SDClipVisionFolder) };
     }
 
     /// <summary>Refreshes all model sets from file source.</summary>
@@ -355,8 +366,8 @@ public class Program
             handler.Shutdown();
         }
         Logs.Verbose("Shutdown extensions...");
-        RunOnAllExtensions(e => e.OnShutdown());
-        Extensions.Clear();
+        Extensions.RunOnAllExtensions(e => e.OnShutdown());
+        Extensions.Extensions.Clear();
         Logs.Verbose("Shutdown image metadata tracker...");
         ImageMetadataTracker.Shutdown();
         Logs.Info("All core shutdowns complete.");
@@ -370,68 +381,6 @@ public class Program
         }
         Logs.Info("Process should end now.");
     }
-
-    #region extensions
-    /// <summary>Initial call that prepares the extensions list.</summary>
-    public static void PrepExtensions()
-    {
-        string[] builtins = Directory.EnumerateDirectories("./src/BuiltinExtensions").Select(s => s.Replace('\\', '/').AfterLast("/src/")).ToArray();
-        string[] extras = Directory.Exists("./src/Extensions") ? Directory.EnumerateDirectories("./src/Extensions/").Select(s => s.Replace('\\', '/').AfterLast("/src/")).ToArray() : [];
-        foreach (Type extType in AppDomain.CurrentDomain.GetAssemblies().ToList().SelectMany(x => x.GetTypes()).Where(t => typeof(Extension).IsAssignableFrom(t) && !t.IsAbstract))
-        {
-            try
-            {
-                Logs.Init($"Prepping extension: {extType.FullName}...");
-                Extension extension = Activator.CreateInstance(extType) as Extension;
-                extension.ExtensionName = extType.Name;
-                Extensions.Add(extension);
-                string[] possible = extType.Namespace.StartsWith("SwarmUI.") ? builtins : extras;
-                foreach (string path in possible)
-                {
-                    if (File.Exists($"src/{path}/{extType.Name}.cs"))
-                    {
-                        if (extension.FilePath is not null)
-                        {
-                            Logs.Error($"Multiple extensions with the same name {extType.Name}! Something will break.");
-                        }
-                        extension.FilePath = $"src/{path}/";
-                    }
-                }
-                if (extension.FilePath is null)
-                {
-                    Logs.Error($"Could not determine path for extension {extType.Name} - is the classname mismatched from the filename? Searched in {string.Join(", ", possible)} for '{extType.Name}.cs'");
-                }
-            }
-            catch (Exception ex)
-            {
-                Logs.Error($"Failed to create extension of type {extType.FullName}: {ex}");
-            }
-        }
-        RunOnAllExtensions(e => e.OnFirstInit());
-    }
-
-    /// <summary>Runs an action on all extensions.</summary>
-    public static void RunOnAllExtensions(Action<Extension> action)
-    {
-        foreach (Extension ext in Extensions)
-        {
-            try
-            {
-                action(ext);
-            }
-            catch (Exception ex)
-            {
-                Logs.Error($"Failed to run event on extension {ext.GetType().FullName}: {ex}");
-            }
-        }
-    }
-
-    /// <summary>Returns the extension instance of the given type.</summary>
-    public static T GetExtension<T>() where T : Extension
-    {
-        return Extensions.FirstOrDefault(e => e is T) as T;
-    }
-    #endregion
 
     #region settings
     /// <summary>Load the settings file.</summary>
@@ -449,7 +398,7 @@ public class Program
         }
         catch (Exception ex)
         {
-            Logs.Error($"Error loading settings file: {ex}");
+            Logs.Error($"Error loading settings file: {ex.ReadableString()}");
             return;
         }
         // TODO: Legacy format patch from Beta 0.6! Remove this before 1.0.
@@ -469,6 +418,22 @@ public class Program
         if (imagePerFolder.HasValue)
         {
             section.Set("Metadata.ImageMetadataPerFolder", imagePerFolder.Value);
+        }
+        // TODO: Legacy format patch from beta 0.9.2!
+        bool? autoCompleteEscapeParens = section.GetBool("DefaultUser.AutoCompleteEscapeParens", null);
+        if (autoCompleteEscapeParens.HasValue)
+        {
+            section.Set("DefaultUser.AutoComplete.EscapeParens", autoCompleteEscapeParens.Value);
+        }
+        string autoCompleteSource = section.GetString("DefaultUser.AutoCompletionsSource", null);
+        if (autoCompleteSource is not null)
+        {
+            section.Set("DefaultUser.AutoComplete.Source", autoCompleteSource);
+        }
+        string autoCompleteSuffix = section.GetString("DefaultUser.AutoCompleteSuffix", null);
+        if (autoCompleteSuffix is not null)
+        {
+            section.Set("DefaultUser.AutoComplete.Suffix", autoCompleteSuffix);
         }
         ServerSettings.Load(section);
     }
@@ -495,7 +460,7 @@ public class Program
         }
         catch (Exception ex)
         {
-            Logs.Error($"Error saving settings file: {ex}");
+            Logs.Error($"Error saving settings file: {ex.ReadableString()}");
             return;
         }
     }

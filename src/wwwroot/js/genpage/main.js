@@ -82,7 +82,8 @@ function copy_current_image_params() {
         alert('No parameters to copy!');
         return;
     }
-    let metadata = JSON.parse(currentMetadataVal).sui_image_params;
+    let readable = interpretMetadata(currentMetadataVal);
+    let metadata = JSON.parse(readable).sui_image_params;
     if ('original_prompt' in metadata) {
         metadata.prompt = metadata.original_prompt;
     }
@@ -129,6 +130,9 @@ function copy_current_image_params() {
         metadata.loras = newLoras;
         metadata.loraweights = newWeights;
     }
+    if (!('aspectratio' in metadata) && 'width' in metadata && 'height' in metadata) {
+        metadata.aspectratio = 'Custom';
+    }
     let exclude = getUserSetting('reuseparamexcludelist').split(',').map(s => cleanParamName(s));
     resetParamsToDefault(exclude);
     for (let param of gen_param_types) {
@@ -139,11 +143,6 @@ function copy_current_image_params() {
         let val = metadata[param.id];
         if (elem && val !== undefined && val !== null && val !== '') {
             setDirectParamValue(param, val);
-            if (param.toggleable && param.visible) {
-                let toggle = getRequiredElementById(`input_${param.id}_toggle`);
-                toggle.checked = true;
-                doToggleEnable(elem.id);
-            }
             if (param.group && param.group.toggles) {
                 let toggle = getRequiredElementById(`input_group_content_${param.group.id}_toggle`);
                 if (!toggle.checked) {
@@ -168,7 +167,11 @@ function formatMetadata(metadata) {
     }
     let data;
     try {
-        data = JSON.parse(metadata).sui_image_params;
+        let readable = interpretMetadata(metadata);
+        if (!readable) {
+            return '';
+        }
+        data = JSON.parse(readable).sui_image_params;
     }
     catch (e) {
         console.log(`Error parsing metadata '${metadata}': ${e}`);
@@ -538,14 +541,24 @@ function toggleStar(path, rawSrc) {
     });
 }
 
-function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, smoothAdd = false) {
+function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, smoothAdd = false, canReparse = true) {
     currentImgSrc = src;
+    if (metadata) {
+        metadata = interpretMetadata(metadata);
+    }
     currentMetadataVal = metadata;
-    if (smoothAdd) {
+    if ((smoothAdd || !metadata) && canReparse) {
         let image = new Image();
         image.src = src;
         image.onload = () => {
-            setCurrentImage(src, metadata, batchId, previewGrow);
+            if (!metadata) {
+                parseMetadata(image, (data, parsedMetadata) => {
+                    setCurrentImage(src, parsedMetadata, batchId, previewGrow, false, false);
+                });
+            }
+            else {
+                setCurrentImage(src, metadata, batchId, previewGrow, false, false);
+            }
         };
         return;
     }
@@ -695,7 +708,44 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, 
             mainGenHandler.doGenerate(input_overrides, { 'initimagecreativity': 0.4 });
         }));
     }, '', 'Runs an instant generation with this image as the input and scale doubled');
-    let metaParsed = JSON.parse(metadata) ?? { is_starred: false };
+    includeButton('Refine Image', () => {
+        toDataURL(img.src, (url => {
+            let input_overrides = {
+                'initimage': url,
+                'initimagecreativity': 0,
+                'images': 1
+            };
+            if (currentMetadataVal) {
+                let readable = interpretMetadata(currentMetadataVal);
+                let metadata = readable ? JSON.parse(readable).sui_image_params : {};
+                if ('seed' in metadata) {
+                    input_overrides['seed'] = metadata.seed;
+                }
+            }
+            let togglerInit = getRequiredElementById('input_group_content_initimage_toggle');
+            let togglerRefine = getRequiredElementById('input_group_content_refineupscale_toggle');
+            let togglerInitOriginal = togglerInit.checked;
+            let togglerRefineOriginal = togglerRefine.checked;
+            togglerInit.checked = false;
+            togglerRefine.checked = true;
+            triggerChangeFor(togglerInit);
+            triggerChangeFor(togglerRefine);
+            mainGenHandler.doGenerate(input_overrides);
+            togglerInit.checked = togglerInitOriginal;
+            togglerRefine.checked = togglerRefineOriginal;
+            triggerChangeFor(togglerInit);
+            triggerChangeFor(togglerRefine);
+        }));
+    }, '', 'Runs an instant generation with Refine / Upscale turned on');
+    let metaParsed = { is_starred: false };
+    if (metadata) {
+        try {
+            metaParsed = JSON.parse(metadata) || metaParsed;
+        }
+        catch (e) {
+            console.log(`Error parsing metadata for image: '${e}', metadata was '${metadata}'`);
+        }
+    }
     includeButton(metaParsed.is_starred ? 'Starred' : 'Star', (e, button) => {
         toggleStar(imagePathClean, src);
     }, (metaParsed.is_starred ? ' star-button button-starred-image' : ' star-button'), 'Toggles this image as starred - starred images get moved to a separate folder and highlighted');
@@ -872,8 +922,8 @@ let genForeverInterval, genPreviewsInterval;
 
 let lastGenForeverParams = null;
 
-function doGenForeverOnce() {
-    if (num_current_gens > 0) {
+function doGenForeverOnce(minQueueSize) {
+    if (num_current_gens >= minQueueSize) {
         return;
     }
     let allParams = getGenInput();
@@ -892,9 +942,10 @@ function toggleGenerateForever() {
     if (isGeneratingForever) {
         button.innerText = 'Stop Generating';
         let delaySeconds = parseFloat(getUserSetting('generateforeverdelay', '0.1'));
+        let minQueueSize = Math.max(1, parseInt(getUserSetting('generateforeverqueuesize', '1')));
         let delayMs = Math.max(parseInt(delaySeconds * 1000), 1);
         genForeverInterval = setInterval(() => {
-            doGenForeverOnce();
+            doGenForeverOnce(minQueueSize);
         }, delayMs);
     }
     else {
@@ -1113,11 +1164,13 @@ function describeImage(image) {
     let buttons = buttonsForImage(image.data.fullsrc, image.data.src);
     let parsedMeta = { is_starred: false };
     if (image.data.metadata) {
+        let metadata = image.data.metadata;
         try {
-            parsedMeta = JSON.parse(image.data.metadata);
+            metadata = interpretMetadata(image.data.metadata);
+            parsedMeta = JSON.parse(metadata) || parsedMeta;
         }
         catch (e) {
-            console.log(`Failed to parse image metadata: ${e}`);
+            console.log(`Failed to parse image metadata: ${e}, metadata was ${metadata}`);
         }
     }
     let description = image.data.name + "\n" + formatMetadata(image.data.metadata);
@@ -1361,6 +1414,21 @@ function resetPageSizer() {
     }
 }
 
+function tweakNegativePromptBox() {
+    let altNegText = getRequiredElementById('alt_negativeprompt_textbox');
+    let cfgScale = document.getElementById('input_cfgscale');
+    let cfgScaleVal = cfgScale ? parseFloat(cfgScale.value) : 7;
+    if (cfgScaleVal == 1) {
+        altNegText.classList.add('alt-negativeprompt-textbox-invalid');
+        altNegText.placeholder = translate(`Negative Prompt is not available when CFG Scale is 1`);
+    }
+    else {
+        altNegText.classList.remove('alt-negativeprompt-textbox-invalid');
+        altNegText.placeholder = translate(`Optionally, type a negative prompt here...`);
+    }
+    altNegText.title = altNegText.placeholder;
+}
+
 function pageSizer() {
     let topSplit = getRequiredElementById('t2i-top-split-bar');
     let topSplit2 = getRequiredElementById('t2i-top-2nd-split-bar');
@@ -1387,6 +1455,7 @@ function pageSizer() {
     let imageEditorSizeBarDrag = false;
     let isSmallWindow = window.innerWidth < 768 || window.innerHeight < 768;
     function setPageBars() {
+        tweakNegativePromptBox();
         if (altRegion.style.display != 'none') {
             altText.style.height = 'auto';
             altText.style.height = `calc(min(15rem, ${Math.max(altText.scrollHeight, 15) + 5}px))`;
@@ -1678,7 +1747,7 @@ function loadUserData(callback) {
             for (let val of data.autocompletions) {
                 let split = val.split('\n');
                 let datalist = autoCompletionsList[val[0]];
-                let entry = { name: split[0], low: split[0].toLowerCase(), clean: split[1], raw: val };
+                let entry = { name: split[0], low: split[1].replaceAll(' ', '_').toLowerCase(), clean: split[1], raw: val, count: 0 };
                 if (split.length > 3) {
                     entry.tag = split[2];
                 }
@@ -1739,6 +1808,7 @@ function updateAllModels(models) {
     }
     selector.value = selectorVal;
     pickle2safetensor_load();
+    modelDownloader.reloadFolders();
 }
 
 let shutdownConfirmationText = translatable("Are you sure you want to shut SwarmUI down?");
@@ -1785,18 +1855,22 @@ function setTitles() {
 }
 setTitles();
 
-function doFeatureInstaller(path, author, name, button_div_id, alt_confirm = null, callback = null, deleteButton = true) {
-    if (!confirm(alt_confirm || `This will install ${path} which is a third-party extension maintained by community developer '${author}'.\nWe cannot make any guarantees about it.\nDo you wish to install?`)) {
+function doFeatureInstaller(name, button_div_id, alt_confirm, callback = null, deleteButton = true) {
+    if (!confirm(alt_confirm)) {
         return;
     }
-    let buttonDiv = getRequiredElementById(button_div_id);
-    buttonDiv.querySelector('button').disabled = true;
-    buttonDiv.appendChild(createDiv('', null, 'Installing...'));
-    genericRequest('ComfyInstallFeatures', {'feature': name}, data => {
-        buttonDiv.appendChild(createDiv('', null, "Installed! Please wait while backends restart. If it doesn't work, you may need to restart Swarm."));
+    let buttonDiv = document.getElementById(button_div_id);
+    if (buttonDiv) {
+        buttonDiv.querySelector('button').disabled = true;
+        buttonDiv.appendChild(createDiv('', null, 'Installing...'));
+    }
+    genericRequest('ComfyInstallFeatures', {'features': name}, data => {
+        if (buttonDiv) {
+            buttonDiv.appendChild(createDiv('', null, "Installed! Please wait while backends restart. If it doesn't work, you may need to restart Swarm."));
+        }
         reviseStatusBar();
         setTimeout(() => {
-            if (deleteButton) {
+            if (deleteButton && buttonDiv) {
                 buttonDiv.remove();
             }
             hasAppliedFirstRun = false;
@@ -1807,34 +1881,35 @@ function doFeatureInstaller(path, author, name, button_div_id, alt_confirm = nul
         }, 8000);
     }, 0, (e) => {
         showError(e);
-        buttonDiv.appendChild(createDiv('', null, 'Failed to install!'));
-        buttonDiv.querySelector('button').disabled = false;
+        if (buttonDiv) {
+            buttonDiv.appendChild(createDiv('', null, 'Failed to install!'));
+            buttonDiv.querySelector('button').disabled = false;
+        }
     });
 }
 
-function revisionInstallIPAdapter() {
-    doFeatureInstaller('https://github.com/cubiq/ComfyUI_IPAdapter_plus', 'cubiq', 'ipadapter', 'revision_install_ipadapter');
-}
-
-function installControlnetPreprocessors() {
-    doFeatureInstaller('https://github.com/Fannovel16/comfyui_controlnet_aux', 'Fannovel16', 'controlnet_preprocessors', 'controlnet_install_preprocessors');
-}
-
-function installVideoRife() {
-    doFeatureInstaller('https://github.com/Fannovel16/ComfyUI-Frame-Interpolation', 'Fannovel16', 'frame_interpolation', 'video_install_frameinterps');
+function installFeatureById(ids, buttonId = null, modalId = null) {
+    let notice = '';
+    for (let id of ids.split(',')) {
+        let feature = comfy_features[id];
+        if (!feature) {
+            console.error(`Feature ID ${id} not found in comfy_features, can't install`);
+            return;
+        }
+        notice += feature.notice + '\n';
+    }
+    doFeatureInstaller(ids, buttonId, notice.trim(), () => {
+        if (modalId) {
+            $(`#${modalId}`).modal('hide');
+        }
+    });
 }
 
 function installTensorRT() {
-    doFeatureInstaller('https://github.com/comfyanonymous/ComfyUI_TensorRT', 'comfyanonymous + NVIDIA', 'comfyui_tensorrt', 'install_trt_button', `This will install TensorRT support developed by Comfy and NVIDIA.\nDo you wish to install?`, () => {
+    doFeatureInstaller('comfyui_tensorrt', 'install_trt_button', `This will install TensorRT support developed by Comfy and NVIDIA.\nDo you wish to install?`, () => {
         getRequiredElementById('tensorrt_mustinstall').style.display = 'none';
         getRequiredElementById('tensorrt_modal_ready').style.display = '';
     });
-}
-
-function installSAM2() {
-    doFeatureInstaller('https://github.com/kijai/ComfyUI-segment-anything-2', 'kijai', 'sam2', 'install_sam2_button', null, () => {
-        $('#sam2_installer').modal('hide');
-    }, false);
 }
 
 function hideRevisionInputs() {
@@ -1959,25 +2034,43 @@ function openEmptyEditor() {
 
 function upvertAutoWebuiMetadataToSwarm(metadata) {
     let realData = {};
-    [realData['prompt'], remains] = metadata.split("\nNegative prompt: ");
-    let lines = remains.split('\n');
-    realData['negativeprompt'] = lines.slice(0, -1).join('\n');
-    let dataParts = lines[lines.length - 1].split(',').map(x => x.split(':').map(y => y.trim()));
-    for (let part of dataParts) {
-        if (part.length == 2) {
-            let clean = cleanParamName(part[0]);
-            if (rawGenParamTypesFromServer.find(x => x.id == clean)) {
-                realData[clean] = part[1];
-            }
-            else if (clean == "size") {
-                let sizeParts = part[1].split('x').map(x => parseInt(x));
-                if (sizeParts.length == 2) {
-                    realData['width'] = sizeParts[0];
-                    realData['height'] = sizeParts[1];
+    // Auto webui has no "proper formal" syntax like JSON or anything,
+    // just a mishmash of text, and there's no way to necessarily predict newlines/colons/etc,
+    // so just make best effort to import based on some easy examples
+    if (metadata.includes("\nNegative prompt: ")) {
+        let parts = metadata.split("\nNegative prompt: ", 2);
+        realData['prompt'] = parts[0];
+        let subSplit = parts[1].split("\n", 2);
+        realData['negativeprompt'] = subSplit[0];
+        metadata = subSplit[1];
+    }
+    else {
+        let lines = metadata.split('\n');
+        realData['prompt'] = lines.slice(0, lines.length - 1).join('\n');
+        metadata = lines[lines.length - 1];
+    }
+    let lines = metadata.split('\n');
+    if (lines.length > 0) {
+        let dataParts = lines[lines.length - 1].split(',').map(x => x.split(':').map(y => y.trim()));
+        for (let part of dataParts) {
+            if (part.length == 2) {
+                let clean = cleanParamName(part[0]);
+                if (rawGenParamTypesFromServer.find(x => x.id == clean)) {
+                    realData[clean] = part[1];
                 }
-            }
-            else {
-                realData[part[0]] = part[1];
+                else if (clean == "size") {
+                    let sizeParts = part[1].split('x').map(x => parseInt(x));
+                    if (sizeParts.length == 2) {
+                        realData['width'] = sizeParts[0];
+                        realData['height'] = sizeParts[1];
+                    }
+                }
+                else if (clean == "scheduletype") {
+                    realData["scheduler"] = part[1].toLowerCase();
+                }
+                else {
+                    realData[part[0]] = part[1];
+                }
             }
         }
     }
@@ -2010,6 +2103,92 @@ function remapMetadataKeys(metadata, keymap) {
 
 const imageMetadataKeys = ['prompt', 'Prompt', 'parameters', 'Parameters', 'userComment', 'UserComment', 'model', 'Model'];
 
+function interpretMetadata(metadata) {
+    if (metadata instanceof Uint8Array) {
+        let prefix = metadata.slice(0, 8);
+        let data = metadata.slice(8);
+        let encodeType = new TextDecoder().decode(prefix);
+        if (encodeType.startsWith('UNICODE')) {
+            if (data[0] == 0 && data[1] != 0) { // This is slightly dirty detection, but it works at least for English text.
+                metadata = decodeUtf16LE(data);
+            }
+            else {
+                metadata = decodeUtf16(data);
+            }
+        }
+        else {
+            metadata = new TextDecoder().decode(data);
+        }
+    }
+    if (metadata) {
+        metadata = metadata.trim();
+        if (metadata.startsWith('{')) {
+            let json = JSON.parse(metadata);
+            if ('sui_image_params' in json) {
+                // It's swarm, we're good
+            }
+            else if ("Prompt" in json) {
+                // Fooocus
+                json = remapMetadataKeys(json, fooocusMetadataMap);
+                metadata = JSON.stringify({ 'sui_image_params': json });
+            }
+            else {
+                // Don't know - discard for now.
+                metadata = null;
+            }
+        }
+        else {
+            let lines = metadata.split('\n');
+            if (lines.length > 1) {
+                metadata = upvertAutoWebuiMetadataToSwarm(metadata);
+            }
+            else {
+                // ???
+                metadata = null;
+            }
+        }
+    }
+    return metadata;
+}
+
+function parseMetadata(data, callback) {
+    exifr.parse(data).then(parsed => {
+        if (parsed && imageMetadataKeys.some(key => key in parsed)) {
+            return parsed;
+        }
+        return exifr.parse(data, imageMetadataKeys);
+    }).then(parsed => {
+        let metadata = null;
+        if (parsed) {
+            if (parsed.parameters) {
+                metadata = parsed.parameters;
+            }
+            else if (parsed.Parameters) {
+                metadata = parsed.Parameters;
+            }
+            else if (parsed.prompt) {
+                metadata = parsed.prompt;
+            }
+            else if (parsed.UserComment) {
+                metadata = parsed.UserComment;
+            }
+            else if (parsed.userComment) {
+                metadata = parsed.userComment;
+            }
+            else if (parsed.model) {
+                metadata = parsed.model;
+            }
+            else if (parsed.Model) {
+                metadata = parsed.Model;
+            }
+        }
+        metadata = interpretMetadata(metadata);
+        callback(data, metadata);
+    }).catch(err => {
+        callback(data, null);
+    });
+}
+
 function imageInputHandler() {
     let imageArea = getRequiredElementById('current_image');
     imageArea.addEventListener('dragover', (e) => {
@@ -2023,90 +2202,9 @@ function imageInputHandler() {
             let file = e.dataTransfer.files[0];
             if (file.type.startsWith('image/')) {
                 let reader = new FileReader();
-                parsemetadata = (e) => {
-                    let data = e.target.result;
-                    exifr.parse(data).then(parsed => {
-                        if (parsed && imageMetadataKeys.some(key => key in parsed)) {
-                            return parsed;
-                        }
-                        return exifr.parse(data, imageMetadataKeys);
-                    }).then(parsed => {
-                        let metadata = null;
-                        if (parsed) {
-                            if (parsed.parameters) {
-                                metadata = parsed.parameters;
-                            }
-                            else if (parsed.Parameters) {
-                                metadata = parsed.Parameters;
-                            }
-                            else if (parsed.prompt) {
-                                metadata = parsed.prompt;
-                            }
-                            else if (parsed.UserComment) {
-                                metadata = parsed.UserComment;
-                            }
-                            else if (parsed.userComment) {
-                                metadata = parsed.userComment;
-                            }
-                            else if (parsed.model) {
-                                metadata = parsed.model;
-                            }
-                            else if (parsed.Model) {
-                                metadata = parsed.Model;
-                            }
-                        }
-                        if (metadata instanceof Uint8Array) {
-                            let prefix = metadata.slice(0, 8);
-                            let data = metadata.slice(8);
-                            let encodeType = new TextDecoder().decode(prefix);
-                            if (encodeType.startsWith('UNICODE')) {
-                                if (data[0] == 0 && data[1] != 0) { // This is slightly dirty detection, but it works at least for English text.
-                                    metadata = decodeUtf16LE(data);
-                                }
-                                else {
-                                    metadata = decodeUtf16(data);
-                                }
-                            }
-                            else {
-                                metadata = new TextDecoder().decode(data);
-                            }
-                        }
-                        if (metadata) {
-                            metadata = metadata.trim();
-                            if (metadata.startsWith('{')) {
-                                let json = JSON.parse(metadata);
-                                if ('sui_image_params' in json) {
-                                    // It's swarm, we're good
-                                }
-                                else if ("Prompt" in json) {
-                                    // Fooocus
-                                    json = remapMetadataKeys(json, fooocusMetadataMap);
-                                    metadata = JSON.stringify({ 'sui_image_params': json });
-                                }
-                                else {
-                                    // Don't know - discard for now.
-                                    metadata = null;
-                                }
-                            }
-                            else {
-                                let lines = metadata.split('\n');
-                                if (lines.length > 1) {
-                                    metadata = upvertAutoWebuiMetadataToSwarm(metadata);
-                                }
-                                else {
-                                    // ???
-                                    metadata = null;
-                                }
-                            }
-                        }
-                        setCurrentImage(data, metadata);
-                    }).catch(err => {
-                        setCurrentImage(e.target.result, null);
-                    });
-                };
                 reader.onload = (e) => {
                     try {
-                        parsemetadata(e);
+                        parseMetadata(e.target.result, (data, metadata) => { setCurrentImage(data, metadata); });
                     }
                     catch (e) {
                         setCurrentImage(e.target.result, null);
@@ -2201,6 +2299,15 @@ function storeImageToHistoryWithCurrentParams(img) {
 
 function genpageLoad() {
     console.log('Load page...');
+    $('#toptablist').on('shown.bs.tab', function (e) {
+        let versionDisp = getRequiredElementById('version_display');
+        if (e.target.id == 'maintab_comfyworkflow') {
+            versionDisp.style.display = 'none';
+        }
+        else {
+            versionDisp.style.display = '';
+        }
+    });
     window.imageEditor = new ImageEditor(getRequiredElementById('image_editor_input'), true, true, () => setPageBarsFunc(), () => needsNewPreview());
     let editorSizebar = getRequiredElementById('image_editor_sizebar');
     window.imageEditor.onActivate = () => {

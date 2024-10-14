@@ -33,6 +33,9 @@ public class SwarmSwarmBackend : AbstractT2IBackend
         [ConfigComment("If the remote instance has an 'Authorization:' header required, specify it here.\nFor example, 'Bearer abc123'.\nIf you don't know what this is, you don't need it.")]
         [ValueIsSecret]
         public string AuthorizationHeader = "";
+
+        [ConfigComment("Any other headers here, newline separated, for example:\nMyHeader: MyVal\nSecondHeader: secondVal")]
+        public string OtherHeaders = "";
     }
 
     /// <summary>Internal HTTP handler.</summary>
@@ -80,11 +83,26 @@ public class SwarmSwarmBackend : AbstractT2IBackend
     /// <summary>Gets a request adapter appropriate to this Swarm backend, including eg auth headers.</summary>
     public Action<HttpRequestMessage> RequestAdapter()
     {
-        if (string.IsNullOrWhiteSpace(Settings.AuthorizationHeader))
+        return req =>
         {
-            return null;
-        }
-        return req => req.Headers.Authorization = AuthenticationHeaderValue.Parse(Settings.AuthorizationHeader);
+            if (!string.IsNullOrWhiteSpace(Settings.AuthorizationHeader))
+            {
+                req.Headers.Authorization = AuthenticationHeaderValue.Parse(Settings.AuthorizationHeader);
+            }
+            if (!string.IsNullOrWhiteSpace(Settings.OtherHeaders))
+            {
+                foreach (string line in Settings.OtherHeaders.Split('\n'))
+                {
+                    string[] parts = line.Split(':');
+                    if (parts.Length != 2)
+                    {
+                        Logs.Error($"Invalid header line in SwarmSwarmBackend: '{line}'");
+                        continue;
+                    }
+                    req.Headers.Add(parts[0].Trim(), parts[1].Trim());
+                }
+            }
+        };
     }
 
     public async Task ValidateAndBuild()
@@ -176,7 +194,7 @@ public class SwarmSwarmBackend : AbstractT2IBackend
                         }
                         catch (Exception ex)
                         {
-                            Logs.Error($"Failed to get {runType} models from remote Swarm at {Address}: {ex}");
+                            Logs.Error($"Failed to get {runType} models from remote Swarm at {Address}: {ex.ReadableString()}");
                         }
                     }));
                 }
@@ -297,7 +315,7 @@ public class SwarmSwarmBackend : AbstractT2IBackend
             }
             catch (Exception ex)
             {
-                Logs.Verbose($"{HandlerTypeData.Name} {BackendData.ID} failed to load, WillIdle={Settings.AllowIdle}, Status={Status}: {ex}");
+                Logs.Verbose($"{HandlerTypeData.Name} {BackendData.ID} failed to load, WillIdle={Settings.AllowIdle}, Status={Status}: {ex.ReadableString()}");
                 if (Status != BackendStatus.LOADING)
                 {
                     return;
@@ -309,7 +327,7 @@ public class SwarmSwarmBackend : AbstractT2IBackend
                 else
                 {
                     Status = BackendStatus.ERRORED;
-                    Logs.Error($"Non-real {HandlerTypeData.Name} {BackendData.ID} failed to load: {ex}");
+                    Logs.Error($"Non-real {HandlerTypeData.Name} {BackendData.ID} failed to load: {ex.ReadableString()}");
                 }
             }
             return;
@@ -356,7 +374,7 @@ public class SwarmSwarmBackend : AbstractT2IBackend
                 {
                     if (!Settings.AllowIdle || NetworkBackendUtils.IdleMonitor.ExceptionIsNonIdleable(ex))
                     {
-                        Logs.Error($"{HandlerTypeData.Name} {BackendData.ID} failed to load: {ex}");
+                        Logs.Error($"{HandlerTypeData.Name} {BackendData.ID} failed to load: {ex.ReadableString()}");
                         Status = BackendStatus.ERRORED;
                         return;
                     }
@@ -434,17 +452,25 @@ public class SwarmSwarmBackend : AbstractT2IBackend
         return req;
     }
 
+    public async Task<JObject> SendAPIJSON(string endpoint, JObject req)
+    {
+        req = req.DeepClone() as JObject;
+        JObject result = null;
+        await RunWithSession(async () =>
+        {
+            req["session_id"] = Session;
+            result = await HttpClient.PostJson($"{Address}/API/{endpoint}", req, RequestAdapter());
+            AutoThrowException(result);
+        });
+        return result;
+    }
+
     /// <inheritdoc/>
     public override async Task<Image[]> Generate(T2IParamInput user_input)
     {
         user_input.ProcessPromptEmbeds(x => $"<embedding:{x}>");
-        Image[] images = null;
-        await RunWithSession(async () =>
-        {
-            JObject generated = await HttpClient.PostJson($"{Address}/API/GenerateText2Image", BuildRequest(user_input), RequestAdapter());
-            AutoThrowException(generated);
-            images = generated["images"].Select(img => Image.FromDataString(img.ToString())).ToArray();
-        });
+        JObject generated = SendAPIJSON("GenerateText2Image", BuildRequest(user_input)).Result;
+        Image[] images = generated["images"].Select(img => Image.FromDataString(img.ToString())).ToArray();
         return images;
     }
 
@@ -463,7 +489,26 @@ public class SwarmSwarmBackend : AbstractT2IBackend
         user_input.ProcessPromptEmbeds(x => $"<embedding:{x}>");
         await RunWithSession(async () =>
         {
-            ClientWebSocket websocket = await NetworkBackendUtils.ConnectWebsocket(Address, "API/GenerateText2ImageWS");
+            ClientWebSocket websocket = await NetworkBackendUtils.ConnectWebsocket(Address, "API/GenerateText2ImageWS", ws =>
+            {
+                if (!string.IsNullOrWhiteSpace(Settings.AuthorizationHeader))
+                {
+                    ws.Options.SetRequestHeader("Authorization", Settings.AuthorizationHeader);
+                }
+                if (!string.IsNullOrWhiteSpace(Settings.OtherHeaders))
+                {
+                    foreach (string line in Settings.OtherHeaders.Split('\n'))
+                    {
+                        string[] parts = line.Split(':');
+                        if (parts.Length != 2)
+                        {
+                            Logs.Error($"Invalid header line in SwarmSwarmBackend: '{line}'");
+                            continue;
+                        }
+                        ws.Options.SetRequestHeader(parts[0].Trim(), parts[1].Trim());
+                    }
+                }
+            });
             await websocket.SendJson(BuildRequest(user_input), API.WebsocketTimeout);
             while (true)
             {

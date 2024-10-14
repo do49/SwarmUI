@@ -5,18 +5,31 @@
     string experimentalHide = Program.ServerSettings.ShowExperimentalFeatures ? "" : "secretexperimental";
 }
 @section Header {
-    <link rel="stylesheet" href="/css/genpage.css?vary=@Utilities.VaryID" />
+    <link rel="stylesheet" href="css/genpage.css?vary=@Utilities.VaryID" />
 }
 
 @if (!Program.ServerSettings.IsInstalled)
 {
     <script>
-        window.location.href = "/Install";
+        window.location.href = "Install";
     </script>
     return;
 }
 <script>
     window.alwaysRefreshOnLoad = @alwaysRefreshOnLoad;
+    window.comfy_features = {};
+    @foreach (InstallableFeatures.ComfyInstallableFeature feature in InstallableFeatures.ComfyFeatures.Values)
+    {
+        <text>
+            window.comfy_features["@feature.ID"] = {
+                "display_name": "@feature.DisplayName",
+                "id": "@feature.ID",
+                "url": "@feature.URL",
+                "author": "@feature.Author",
+                "notice": "@(new HtmlString(Utilities.EscapeJsonString(feature.Notice)))"
+            };
+        </text>
+    }
 </script>
 
 <ul class="nav nav-tabs" role="tablist" id="toptablist">
@@ -192,8 +205,32 @@
                         <br>You can then use the paintbucket tool to fill mask with sections you want, then delete or hide the segment layer.
                     </div>
                     <div class="modal-footer" id="install_sam2_button">
-                        <button type="button" class="btn btn-primary basic-button translate" onclick="installSAM2()">Install</button>
+                        <button type="button" class="btn btn-primary basic-button translate" onclick="installFeatureById('sam2', 'install_sam2_button', 'sam2_installer')">Install</button>
                         <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#sam2_installer').modal('hide')">Cancel</button>
+                    </div>
+                @WebUtil.ModalFooter()
+                @WebUtil.ModalHeader("bnb_nf4_installer", "Install BnB NF4 Support")
+                    <div class="modal-body">
+                        The model you're trying to use appears to be a Bits-and-Bytes NF4 format model.
+                        <br>
+                        <br>This requires an extension released by comfyanonymous and lllyasviel (AGPL license) to run. Would you like to install it?
+                    </div>
+                    <div class="modal-footer" id="install_bnbnf4_button">
+                        <button type="button" class="btn btn-primary basic-button translate" onclick="installFeatureById('bnb_nf4', 'install_bnbnf4_button', 'bnb_nf4_installer')">Install</button>
+                        <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#bnb_nf4_installer').modal('hide');localStorage.setItem('hide_bnb_nf4_check', 'true')">No and don't show again</button>
+                        <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#bnb_nf4_installer').modal('hide')">Cancel</button>
+                    </div>
+                @WebUtil.ModalFooter()
+                @WebUtil.ModalHeader("gguf_installer", "Install GGUF Support")
+                    <div class="modal-body">
+                        The model you're trying to use appears to be a GGUF format model.
+                        <br>
+                        <br>This requires an extension released by city96 to run. Would you like to install it?
+                    </div>
+                    <div class="modal-footer" id="install_gguf_button">
+                        <button type="button" class="btn btn-primary basic-button translate" onclick="installFeatureById('gguf', 'install_gguf_button', 'gguf_installer')">Install</button>
+                        <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#gguf_installer').modal('hide');localStorage.setItem('hide_gguf_check', 'true')">No and don't show again</button>
+                        <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#gguf_installer').modal('hide')">Cancel</button>
                     </div>
                 @WebUtil.ModalFooter()
             </div>
@@ -345,7 +382,7 @@
                 <div class="modal-body">
                     <div><span id="edit_model_technical_data"></span></div>
                     <hr>
-                    <div>Load from civitai: <input type="text" id="edit_model_civitai_url" class="auto-text translate" placeholder="Civitai URL" autocomplete="off" /> <button type="button" class="btn btn-primary basic-button translate" onclick="edit_model_load_civitai()">Load</button>
+                    <div>Load from civitai: <input type="text" id="edit_model_civitai_url" class="auto-text translate" placeholder="Civitai URL (or blank to use hash)" title="Civitai URL (or blank to use hash)" autocomplete="off" /> <button type="button" class="btn btn-primary basic-button translate small-button" onclick="edit_model_load_civitai()">Load</button>
                     <div id="edit_model_civitai_info"></div></div>
                     <div>Author: <input type="text" id="edit_model_author" class="modal_text_extra translate" placeholder="Model Author" /></div>
                     <div>Architecture: <select id="edit_model_type" class="modal_text_extra" placeholder="Model Type">
@@ -470,9 +507,9 @@
                 </div>
                 <br>
                 <div class="card border-secondary mb-3 card-center-container">
-                    <div class="card-header translate">Metadata Reset</div>
+                    <div class="card-header translate">Metadata Utilities</div>
                     <div class="card-body">
-                        <p class="card-text translate">
+                        <p class="card-text">
                             <div class="card-center-container">
                                 <button id="util_massmetadataclear_button" class="basic-button translate" onclick="util_massMetadataClear()">Reset All Metadata</button>
                             </div>
@@ -480,6 +517,48 @@
                             <br>This is useful for example if you've externally modified your model or image files and want to clean out or update Swarm's metadata tracking.
                             <br>Note that this does not remove metadata from the models or images themselves, just from the databases that keep an efficient tracker of them.
                             <br>This may take a moment to run.
+                            <hr>
+                            <div class="card-center-container">
+                                <button id="util_modelmetadatascanner_button" class="basic-button translate" onclick="modelMetadataScanner.run()">Scan Civitai For Metadata</button>
+                            </div>
+                            <br>Model Sub-type: <select id="util_modelmetadatascanner_subtype" class="auto-dropdown">
+                                <option value="all" class="translate" selected>all</option>
+                                @foreach (string key in Program.T2IModelSets.Keys)
+                                {
+                                    <option value="@key" class="translate">@key</option>
+                                }
+                            </select>
+                            &emsp;Date range: <select id="util_modelmetadatascanner_date" class="auto-dropdown">
+                                <option value="all" class="translate" selected>All (ignore time)</option>
+                                <option value="today" class="translate">Models downloaded today (24 hours)</option>
+                                <option value="week" class="translate">Models downloaded this week (7 days)</option>
+                                <option value="month" class="translate">Models downloaded this month (31 days)</option>
+                            </select>
+                            <br>Filter: <select id="util_modelmetadatascanner_requirements" class="auto-dropdown">
+                                <option value="all" class="translate" selected>All</option>
+                                <option value="no_thumbnail" class="translate">Only models without a thumbnail</option>
+                                <option value="no_description" class="translate">Only models without a description</option>
+                                <option value="no_author" class="translate">Only models without an author</option>
+                                <option value="explicit_url" class="translate">Only models with an explicit civitai url in the description</option>
+                            </select>
+                            &emsp;Replace: <select id="util_modelmetadatascanner_replace" class="auto-dropdown">
+                                <option value="only_missing" class="translate" selected>Only missing data</option>
+                                <option value="all" class="translate">All (Replace everything)</option>
+                                <option value="only_thumbnail" class="translate">Only the thumbnail image</option>
+                                <option value="only_text" class="translate">Only the basic text inputs (eg description)</option>
+                            </select>
+                            <br>
+                            Model filename filter: <input type="text" id="util_modelmetadatascanner_filter" class="auto-text" placeholder="Filter by filename" />
+                            <br><span id="util_modelmetadatascanner_result"></span>
+                            <br>
+                            <br>If you click this button, Swarm will scan Civitai for metadata on models, and update the metadata database with any information found.
+                            <br>You can filter by date range (eg only recently downloaded model files), and/or by required missing content (eg only scan those without images).
+                            <br>You can also choose what metadata gets updated (eg only the image).
+                            <br>Optionally use the model filename filter to only scan models with a specific filename. Use '*' as a wildcard.
+                            <br>(For example, 'SDXL/*' will scan only models within a folder named 'SDXL/'. This is case-insensitive.)
+                            <br>Will take a while, and may seem to freeze up if it has to apply edits. This is normal.
+                            <br>Additional debug info while running can be found in the browser console.
+                            <br><b>Be careful!</b> If you have manually edited metadata, you can easily accidentally delete it. There is no undo for unwanted changes, they are applied rapidly in bulk.
                         </p>
                     </div>
                 </div>
@@ -582,11 +661,12 @@
                 </div>
                 <div class="model-downloader-section-wrapper">
                     <div class="model-downloader-main-section">
-                        <div class="card-center-container" style="min-width: 30rem">
+                        <div style="width: 100%">
                             <br>@WebUtil.TextPopoverButton("modeldownloaderurl", "Exact web URL to the model.\nCivitai URLs are fully supported and will load metadata.\nHuggingFace URLs will be recognized.\nFor anything else, make sure the URL is a direct download URL, not a webpage.\nNote only '.safetensors' models are allowed.") <b>URL</b>: <input type="text" id="model_downloader_url" class="auto-text auto-text-wide" placeholder="Model URL" oninput="modelDownloader.urlInput()" autocomplete="off" />
                             <br>
-                            <br><div style="text-align: center">@WebUtil.TextPopoverButton("modeldownloaderstatus", "This section will update after you input a URL to inform you if the URL is valid.\nThe box below will display loaded metadata if you use a civitai URL.") <b>Status</b>: <span id="model_downloader_status">(...)</span></div>
+                            <br><div>@WebUtil.TextPopoverButton("modeldownloaderstatus", "This section will update after you input a URL to inform you if the URL is valid.\nThe box below will display loaded metadata if you use a civitai URL.") <b>Status</b>: <span id="model_downloader_status">(...)</span></div>
                             <div class="model_downloader_metadatazone" id="model_downloader_metadatazone"></div>
+                            <div class="model_downloader_imageside" id="model_downloader_imageside"></div>
                             <br>@WebUtil.TextPopoverButton("modeldownloadertype", "The base model sub-type to use, ie what category it gets saved to.\nMake sure this is correct, you don't want a LoRA in your base models folder or similar.\nCivitai links will autoset this when they load metadata.") <b>Model Type</b>: <select class="auto-dropdown" id="model_downloader_type" autocomplete="off">
                                 <option value="Stable-Diffusion">Base Model</option>
                                 <option value="LoRA">LoRA</option>
@@ -594,6 +674,7 @@
                                 <option value="Embedding">Embedding</option>
                                 <option value="ControlNet">ControlNet</option>
                             </select>
+                            <br>@WebUtil.TextPopoverButton("modeldownloaderfolder", "What folder to put the model in.\nTo create new folders, simply type paths with '/' in them into the 'Save as:' name box below.") <b>Folder</b>: <select class="auto-dropdown" id="model_downloader_folder" autocomplete="off"></select>
                             <br>
                             <br>@WebUtil.TextPopoverButton("modeldownloadersaveas", "File name to save as. Don't include the '.safetensors' file extension, just the name.\nYou can use a folder path with the '/' symbol.") <b>Save as</b>: <input type="text" id="model_downloader_name" class="auto-text auto-text-wide" placeholder="Model Name" autocomplete="off" oninput="modelDownloader.nameInput()" />
                             <br>
@@ -714,6 +795,9 @@
                 <a class="nav-link translate" data-bs-toggle="tab" href="#Settings-Server" id="serverconfigtabbutton" aria-selected="false" tabindex="-1" role="tab">Server Configuration</a>
             </li>
             <li class="nav-item" role="presentation">
+                <a class="nav-link translate" data-bs-toggle="tab" href="#Server-Extensions" id="extensionstabbutton" aria-selected="false" tabindex="-1" role="tab">Extensions</a>
+            </li>
+            <li class="nav-item" role="presentation">
                 <a class="nav-link translate" data-bs-toggle="tab" href="#Server-Logs" id="logtabbutton" aria-selected="false" tabindex="-1" role="tab">Logs</a>
             </li>
         </ul>
@@ -726,6 +810,7 @@
                             The "Server" tab provides access to SwarmUI's server internals, including:
                             <br>&bullet; The <a href="#Settings-Backends" onclick="getRequiredElementById('serverbackendstabbutton').click()">Backends</a> tab, which allows you to configure and manage backends (the underlying engines that provide the generation core, or remote instances of swarm this instance is connected to)
                             <br>&bullet; The <a href="#Settings-Server" onclick="getRequiredElementById('serverconfigtabbutton').click()">Server Configuration</a> tab, which allows you to configure and manage Swarm's settings (such as models directory, server host port, etc)
+                            <br>&bullet; The <a href="#Server-Extensions" onclick="getRequiredElementById('extensionstabbutton').click()">Extensions</a> tab, which provides ways to manage your Swarm extensions or install new ones
                             <br>&bullet; The <a href="#Server-Logs" onclick="getRequiredElementById('logtabbutton').click()">Logs</a> tab, which allows you to view the server logs (eg if you get an error, check Logs -&gt; Debug)
                             <br>
                             <br>This is not to be confused with the <a href="#user_tab" onclick="getRequiredElementById('usersettingstabbutton').click();getRequiredElementById('userconfigtabbutton').click()">User Settings</a> tab, which allows you to configure your user settings (eg save path/format, default VAE choice, etc)
@@ -856,29 +941,119 @@
                 <div style="height: 10rem"></div> <!-- Spacer -->
             </div>
             <div class="tab-pane" id="Server-Logs" role="tabpanel">
-                <center>View: <select id="server_log_type_selector"></select> Filter: <input type="text" id="server_log_filter" placeholder="Filter" /></center>
+                @WebUtil.ModalHeader("do_log_pastebin_modal", "Submit Logs To Pastebin")
+                    <div class="modal-body">
+                        <p class="translate">This will submit the text of your server logs to a <a href="https://paste.denizenscript.com/New/Swarm">public pastebin service</a>. This is to make it easy to share debug logs when getting support on the <a href="https://discord.gg/q2y38cqjNw">SwarmUI discord</a>.</p>
+                        <p class="translate">Once submitted, your server logs will be visible to the public and not easily deletable. Please ensure your logs do not contain private information (eg personal prompts) before autosubmitting.</p>
+                        <p class="translate">(If your logs do have private information, please restart and replicate whatever you need to show, then pastebin the logs).</p>
+                        <p class="translate">(Alternately, you can manually submit and edit the content first via <a href="https://paste.denizenscript.com/New/Swarm">this link</a>, just be sure not to delete anything important).</p>
+                        <span class="translate">Which minimum log level would you like to submit?</span> <select id="log_pastebin_type" autocomplete="off"><option>verbose</option><option selected>debug</option><option>info</option></select>
+                        <div id="log_pastebin_result_area"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-primary basic-button translate" id="log_submit_pastebin_button">Submit</button>
+                        <button type="button" class="btn btn-secondary basic-button translate" id="log_cancel_pastebin_button" onclick="$('#do_log_pastebin_modal').modal('hide')">Cancel</button>
+                    </div>
+                @WebUtil.ModalFooter()
+                <center>View: <select id="server_log_type_selector"></select> Filter: <input type="text" id="server_log_filter" placeholder="Filter" /> <button class="basic-button" id="server_log_pastebin">Pastebin</button></center>
                 <div id="server_logs_container" class="server_logs_container"></div>
+            </div>
+            <div class="tab-pane" id="Server-Extensions" role="tabpanel">
+                <div class="card border-secondary mb-3 card-center-container">
+                    <div class="card-header translate">Extensions</div>
+                    <div class="card-body">
+                        <p class="card-text">
+                            <span class="translate">The "Extensions" tab lets you control your installed Swarm extensions, or install new ones.</span>
+                        </p>
+                    </div>
+                </div>
+                <div class="card border-warning mb-3 card-center-container" id="extensions_installed_card" style="display:none">
+                    <div class="card-header translate">New Extensions Installed</div>
+                    <div class="card-body">
+                        <p class="card-text">
+                            <span class="translate">Extensions installed or updated. Changes will apply the next time you restart the SwarmUI server.</span>
+                            <div><button class="basic-button translate" id="extension_restart_button" onclick="extensionsManager.restartServer()">Restart Now</button></div>
+                        </p>
+                    </div>
+                </div>
+                <center>
+                    <h3>Installed Extensions</h3>
+                    <table class="simple-table">
+                        <tr>
+                            <th>Name</th>
+                            <th>Version</th>
+                            <th>Tags</th>
+                            <th>Author</th>
+                            <th>Description</th>
+                            <th>Readme</th>
+                            <th>Actions</th>
+                        </tr>
+                        @foreach (Extension ext in Program.Extensions.Extensions.Where(e => !e.IsCore))
+                        {
+                            <tr>
+                                <td>@ext.ExtensionName</td>
+                                <td><code>@ext.Version</code></td>
+                                <td>@ExtensionsManager.HtmlTags(ext.Tags)</td>
+                                <td>@ext.ExtensionAuthor</td>
+                                <td>@ext.Description</td>
+                                <td>@(ext.ReadmeURL == "" ? "(Missing)": new HtmlString($"<a target=\"_blank\" href=\"{ext.ReadmeURL}\">Here</a>"))</td>
+                                <td>
+                                    @if (ext.CanUpdate)
+                                    {
+                                        <button class="basic-button" onclick="extensionsManager.updateExtension('@ext.ExtensionName', this)">Update</button>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </table>
+                    <br>
+                    <h3>Available Extensions</h3>
+                    <table class="simple-table">
+                        <tr>
+                            <th>Name</th>
+                            <th>Tags</th>
+                            <th>Author</th>
+                            <th>Description</th>
+                            <th>Readme</th>
+                            <th>Actions</th>
+                        </tr>
+                        @foreach (ExtensionsManager.ExtensionInfo ext in Program.Extensions.KnownExtensions.Where(e => !Program.Extensions.LoadedExtensionFolders.Contains(e.FolderName) && !e.Tags.Contains("hidden")))
+                        {
+                            <tr>
+                                <td>@ext.Name</td>
+                                <td>@ExtensionsManager.HtmlTags(ext.Tags)</td>
+                                <td>@ext.Author</td>
+                                <td>@ext.Description</td>
+                                <td><a href="@ext.URL">Here</a></td>
+                                <td>
+                                    <button class="basic-button" onclick="extensionsManager.installExtension('@ext.Name', this)">Install</button>
+                                </td>
+                            </tr>
+                        }
+                    </table>
+                </center>
             </div>
         </div>
     </div>
 </div>
 
 @section Scripts {
-    <script src="/js/exifr.min.js"></script>
-    <script src="/js/genpage/welcomemessages.js?vary=@Utilities.VaryID"></script>
-    <script src="/js/genpage/backends.js?vary=@Utilities.VaryID"></script>
-    <script src="/js/genpage/browsers.js?vary=@Utilities.VaryID"></script>
-    <script src="/js/genpage/presets.js?vary=@Utilities.VaryID"></script>
-    <script src="/js/genpage/models.js?vary=@Utilities.VaryID"></script>
-    <script src="/js/genpage/params.js?vary=@Utilities.VaryID"></script>
-    <script src="/js/genpage/utiltab.js?vary=@Utilities.VaryID"></script>
-    <script src="/js/genpage/usertab.js?vary=@Utilities.VaryID"></script>
-    <script src="/js/genpage/image_editor.js?vary=@Utilities.VaryID"></script>
-    <script src="/js/genpage/generatehandler.js?vary=@Utilities.VaryID"></script>
-    <script src="/js/genpage/simpletab.js?vary=@Utilities.VaryID"></script>
-    <script src="/js/genpage/main.js?vary=@Utilities.VaryID"></script>
-    <script src="/js/genpage/settings_editor.js?vary=@Utilities.VaryID"></script>
-    <script src="/js/genpage/logs.js?vary=@Utilities.VaryID"></script>
-    <script src="/js/genpage/ui_improvements.js?vary=@Utilities.VaryID"></script>
+    <script src="js/exifr.min.js"></script>
+    <script src="js/genpage/welcomemessages.js?vary=@Utilities.VaryID"></script>
+    <script src="js/genpage/backends.js?vary=@Utilities.VaryID"></script>
+    <script src="js/genpage/browsers.js?vary=@Utilities.VaryID"></script>
+    <script src="js/genpage/presets.js?vary=@Utilities.VaryID"></script>
+    <script src="js/genpage/models.js?vary=@Utilities.VaryID"></script>
+    <script src="js/genpage/params.js?vary=@Utilities.VaryID"></script>
+    <script src="js/genpage/utiltab.js?vary=@Utilities.VaryID"></script>
+    <script src="js/genpage/servertab.js?vary=@Utilities.VaryID"></script>
+    <script src="js/genpage/usertab.js?vary=@Utilities.VaryID"></script>
+    <script src="js/genpage/image_editor.js?vary=@Utilities.VaryID"></script>
+    <script src="js/genpage/generatehandler.js?vary=@Utilities.VaryID"></script>
+    <script src="js/genpage/simpletab.js?vary=@Utilities.VaryID"></script>
+    <script src="js/genpage/main.js?vary=@Utilities.VaryID"></script>
+    <script src="js/genpage/settings_editor.js?vary=@Utilities.VaryID"></script>
+    <script src="js/genpage/logs.js?vary=@Utilities.VaryID"></script>
+    <script src="js/genpage/ui_improvements.js?vary=@Utilities.VaryID"></script>
     @WebServer.PageFooterExtra
 }

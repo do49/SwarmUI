@@ -18,9 +18,8 @@ In the future when more extensions exist, we'll build out more support for easil
 
 ### How To Find Extensions
 
-For now, manual list of known extensions:
+Launch Swarm and go to `Server` -> `Extensions`
 
-- [FaceTools](https://github.com/Quaggles/SwarmUI-FaceTools) adds support for CodeFormer FaceRestore, and ReActor.
-- [WDV](https://huggingface.co/waifu-diffusion/wdv-tests) adds support for WaifuDiffusion-V EDM sampling.
+(Temporary): for now, click the link in the extensions page to view the github repo and install it manually. In the near future an easy installer UI will be provided.
 
-In the future if more extensions exist, there will be a better manager for these.
+See also the Extensions channel in The SwarmUI Discord.

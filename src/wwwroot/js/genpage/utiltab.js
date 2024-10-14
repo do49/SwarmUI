@@ -58,7 +58,7 @@ function pickle2safetensor_load(mapping = null) {
     }
     for (let type of ['Stable-Diffusion', 'LoRA', 'VAE', 'Embedding', 'ControlNet']) {
         let modelSet = mapping[type];
-        let count = modelSet.filter(x => !x.startsWith("backup") && !x.endsWith('.safetensors') && !x.endsWith('.sft') && !x.endsWith('.engine')).length;
+        let count = modelSet.filter(x => !x.startsWith("backup") && x != "(None)" && !nativelySupportedModelExtensions.includes(x.split('.').pop())).length;
         let counter = getRequiredElementById(`pickle2safetensor_${type.toLowerCase()}_count`);
         counter.innerText = count;
         let button = getRequiredElementById(`pickle2safetensor_${type.toLowerCase()}_button`);
@@ -183,13 +183,73 @@ class ModelDownloaderUtil {
         this.name = getRequiredElementById('model_downloader_name');
         this.button = getRequiredElementById('model_downloader_button');
         this.metadataZone = getRequiredElementById('model_downloader_metadatazone');
+        this.imageSide = getRequiredElementById('model_downloader_imageside');
         this.activeZone = getRequiredElementById('model_downloader_right_sidebar');
+        this.folders = getRequiredElementById('model_downloader_folder');
         this.hfPrefix = 'https://huggingface.co/';
         this.civitPrefix = 'https://civitai.com/';
+        this.civitGreenPrefix = 'https://civitai.green/';
     }
 
-    getCivitaiMetadata(id, versId, callback) {
-        getJsonDirect(`${this.civitPrefix}api/v1/models/${id}`, (status, rawData) => {
+    reloadFolders() {
+        if (!coreModelMap) {
+            return;
+        }
+        let selected = this.folders.value;
+        let html = '<option>(None)</option>';
+        let folderList = [];
+        for (let submap of Object.values(coreModelMap)) {
+            for (let model of submap) {
+                let parts = model.split('/');
+                if (parts.length == 1) {
+                    continue;
+                }
+                if (folderList.includes(parts.slice(0, -1).join('/'))) {
+                    continue;
+                }
+                for (let i = 1; i < parts.length; i++) {
+                    let folder = parts.slice(0, i).join('/');
+                    if (!folderList.includes(folder)) {
+                        folderList.push(folder);
+                    }
+                }
+            }
+        }
+        folderList.sort();
+        for (let folder of folderList) {
+            html += `<option>${folder}</option>\n`;
+        }
+        this.folders.innerHTML = html;
+        this.folders.value = selected || '(None)';
+    }
+
+    searchCivitaiForHash(hash, callback) {
+        if (hash.startsWith('0x')) {
+            hash = hash.substring(2);
+        }
+        hash = hash.substring(0, 12);
+        genericRequest('ForwardMetadataRequest', { 'url': `${this.civitPrefix}api/v1/model-versions/by-hash/${hash}` }, (rawData) => {
+            if (rawData.response['error']) {
+                callback(null);
+                return;
+            }
+            callback(`https://civitai.com/models/${rawData.response.modelId}?modelVersionId=${rawData.response.id}`);
+        }, 0, () => {
+            callback(null);
+        });
+    }
+
+    getCivitaiMetadata(id, versId, callback, identifier = '') {
+        let doError = () => {
+            callback(null, null, null, null, null, null, null);
+        }
+        genericRequest('ForwardMetadataRequest', { 'url': `${this.civitPrefix}api/v1/models/${id}` }, (rawData) => {
+            rawData = rawData.response;
+            if (!rawData) {
+                console.log(`refuse civitai url because response is empty - for model id ${id} / ${identifier}`);
+                doError();
+                return;
+            }
             let modelType = null;
             let metadata = null;
             let rawVersion = rawData.modelVersions[0];
@@ -205,18 +265,26 @@ class ModelDownloaderUtil {
                     }
                 }
             }
+            if (!file.name.endsWith('.safetensors') && !file.name.endsWith('.sft')) {
+                console.log(`refuse civitai url because download url is ${file.downloadUrl} / ${identifier}`);
+                doError();
+                return;
+            }
             if (rawData.type == 'Checkpoint') { modelType = 'Stable-Diffusion'; }
             if (rawData.type == 'LORA') { modelType = 'LoRA'; }
             if (rawData.type == 'TextualInversion') { modelType = 'Embedding'; }
             if (rawData.type == 'ControlNet') { modelType = 'ControlNet'; }
+            let imgs = rawVersion.images ? rawVersion.images.filter(img => img.type == 'image') : [];
             let applyMetadata = (img) => {
                 let url = `${this.civitPrefix}models/${id}?modelVersionId=${versId}`;
                 metadata = {
                     'modelspec.title': `${rawData.name} - ${rawVersion.name}`,
-                    'modelspec.author': rawData.creator.username,
                     'modelspec.description': `From <a href="${url}">${url}</a>\n${rawVersion.description || ''}\n${rawData.description}\n`,
                     'modelspec.date': rawVersion.createdAt,
                 };
+                if (rawData.creator) {
+                    metadata['modelspec.author'] = rawData.creator.username;
+                }
                 if (rawVersion.trainedWords) {
                     metadata['modelspec.trigger_phrase'] = rawVersion.trainedWords.join(", ");
                 }
@@ -226,21 +294,23 @@ class ModelDownloaderUtil {
                 if (img) {
                     metadata['modelspec.thumbnail'] = img;
                 }
-                callback(rawData, rawVersion, metadata, modelType, file.downloadUrl, img);
+                callback(rawData, rawVersion, metadata, modelType, file.downloadUrl, img, imgs.map(x => x.url));
             }
-            let imgs = rawVersion.images ? rawVersion.images.filter(img => img.type == 'image') : [];
             if (imgs.length > 0) {
                 imageToData(imgs[0].url, img => applyMetadata(img));
             }
             else {
                 applyMetadata('');
             }
-        }, (status, data) => {
-            callback(null, null, null, null, null, null);
+        }, 0, (status, data) => {
+            doError();
         });
     }
 
     parseCivitaiUrl(url) {
+        if (url.startsWith(this.civitGreenPrefix)) {
+            url = this.civitPrefix + url.substring(this.civitGreenPrefix.length);
+        }
         let parts = url.substring(this.civitPrefix.length).split('/', 4); // 'models', id, name + sometimes version OR 'api', 'download', 'models', versid
         if (parts.length == 2 && parts[0] == 'models' && parts[1].includes('?')) {
             let subparts = parts[1].split('?', 2);
@@ -307,6 +377,9 @@ class ModelDownloaderUtil {
             this.button.disabled = false;
             return;
         }
+        if (url.startsWith(this.civitGreenPrefix)) {
+            url = this.civitPrefix + url.substring(this.civitGreenPrefix.length);
+        }
         if (url.startsWith(this.civitPrefix)) {
             let parts = url.substring(this.civitPrefix.length).split('/', 4); // 'models', id, name + sometimes version OR 'api', 'download', 'models', versid
             if (parts.length == 2 && parts[0] == 'models' && parts[1].includes('?')) {
@@ -317,7 +390,7 @@ class ModelDownloaderUtil {
                 parts = ['models', parts[1], ''];
             }
             let loadMetadata = (id, versId) => {
-                this.getCivitaiMetadata(id, versId, (rawData, rawVersion, metadata, modelType, url, img) => {
+                this.getCivitaiMetadata(id, versId, (rawData, rawVersion, metadata, modelType, url, img, imgs) => {
                     if (!rawData) {
                         this.urlStatusArea.innerText = "URL appears to be a CivitAI link, but seems to not be valid. Please double-check the link.";
                         this.nameInput();
@@ -328,7 +401,7 @@ class ModelDownloaderUtil {
                         this.type.value = modelType;
                     }
                     this.urlStatusArea.innerText = "URL appears to be a CivitAI link, and has been loaded from Civitai API.";
-                    this.name.value = `${rawData.name} - ${rawVersion.name}`;
+                    this.name.value = `${rawData.name} - ${rawVersion.name}`.replaceAll(/[\|\\\/\:\*\?\"\<\>\|\,\.\&\!\[\]\(\)]/g, '-');
                     this.nameInput();
                     this.metadataZone.innerHTML = `
                         Found civitai metadata for model ID ${escapeHtml(id)} version id ${escapeHtml(versId)}:
@@ -336,16 +409,45 @@ class ModelDownloaderUtil {
                         <br><b>Version title</b>: ${escapeHtml(rawVersion.name)}
                         <br><b>Base model</b>: ${escapeHtml(rawVersion.baseModel)}
                         <br><b>Date</b>: ${escapeHtml(rawVersion.createdAt)}`
-                        + (img ? `<br><b>Thumbnail</b>:<br> <img src="${img}" style="max-width: 100%; max-height: 100%;">` : '')
                         + `<br><b>Model description</b>: ${safeHtmlOnly(rawData.description)}`
                         + (rawVersion.description ? `<br><b>Version description</b>: ${safeHtmlOnly(rawVersion.description)}` : '')
                         + (rawVersion.trainedWords ? `<br><b>Trained words</b>: ${escapeHtml(rawVersion.trainedWords.join(", "))}` : '');
                     this.metadataZone.dataset.raw = `${JSON.stringify(metadata, null, 2)}`;
                     if (img) {
                         this.metadataZone.dataset.image = img;
+                        this.imageSide.innerHTML = `<img src="${img}"/>`;
+                        if (imgs.length > 1) {
+                            this.imageSide.innerHTML += `<br><div class="model_downloader_imageselector">
+                                    <button class="image-select-prev basic-button">Previous</button>
+                                    <button class="image-select-next basic-button">Next</button>
+                                </div>`;
+                            let imgElem = this.imageSide.querySelector('img');
+                            let prevButton = this.imageSide.querySelector('.image-select-prev');
+                            let nextButton = this.imageSide.querySelector('.image-select-next');
+                            let imgIndex = 0;
+                            let updateImage = () => {
+                                imgIndex = (imgIndex + imgs.length) % imgs.length;
+                                let ind = imgIndex;
+                                let url = imgs[imgIndex];
+                                if (url.startsWith('data:')) {
+                                    this.metadataZone.dataset.image = url;
+                                    imgElem.src = url;
+                                }
+                                else {
+                                    imageToData(url, (img) => {
+                                        imgs[ind] = img;
+                                        this.metadataZone.dataset.image = url;
+                                        imgElem.src = img;
+                                    });
+                                }
+                            };
+                            prevButton.onclick = () => { imgIndex--; updateImage(); };
+                            nextButton.onclick = () => { imgIndex++; updateImage(); };
+                        }
                     }
                     else {
                         delete this.metadataZone.dataset.image;
+                        this.imageSide.innerHTML = ``;
                     }
                 });
             }
@@ -382,6 +484,7 @@ class ModelDownloaderUtil {
         else {
             this.metadataZone.innerHTML = '';
             this.metadataZone.dataset.raw = '';
+            this.imageSide.innerHTML = '';
         }
         if (url.trim() == '') {
             this.urlStatusArea.innerText = "(...)";
@@ -407,7 +510,6 @@ class ModelDownloaderUtil {
         else {
             this.name.style.borderColor = '';
         }
-
         if (this.url.value.trim() == '') {
             this.url.style.borderColor = 'red';
             this.button.disabled = true;
@@ -415,11 +517,15 @@ class ModelDownloaderUtil {
         else {
             this.url.style.borderColor = '';
         }
+        if (this.name.value.includes(' ')) {
+            this.name.value = this.name.value.replaceAll(' ', '_');
+        }
     }
 
     run() {
         this.button.disabled = true;
-        let download = new ActiveModelDownload(this, this.name.value, this.url.value, this.metadataZone.dataset.image, this.type.value, this.metadataZone.dataset.raw || '');
+        let name = this.folders.value == '(None)' ? this.name.value : this.folders.value + '/' + this.name.value;
+        let download = new ActiveModelDownload(this, name, this.url.value, this.metadataZone.dataset.image, this.type.value, this.metadataZone.dataset.raw || '');
         download.download();
     }
 }
@@ -515,3 +621,234 @@ class ActiveModelDownload {
 }
 
 modelDownloader = new ModelDownloaderUtil();
+
+class ModelMetadataScanner {
+    constructor() {
+        this.button = getRequiredElementById('util_modelmetadatascanner_button');
+        this.subTypeSelector = getRequiredElementById('util_modelmetadatascanner_subtype');
+        this.dateSelector = getRequiredElementById('util_modelmetadatascanner_date');
+        this.filterSelector = getRequiredElementById('util_modelmetadatascanner_requirements');
+        this.replaceSelector = getRequiredElementById('util_modelmetadatascanner_replace');
+        this.nameFilter = getRequiredElementById('util_modelmetadatascanner_filter');
+        this.resultArea = getRequiredElementById('util_modelmetadatascanner_result');
+        this.maxSimulLoads = 30;
+    }
+
+    async runForList(list) {
+        if (this.button.disabled) {
+            return;
+        }
+        this.button.disabled = true;
+        let date = this.dateSelector.value;
+        let filter = this.filterSelector.value;
+        let replace = this.replaceSelector.value;
+        let nameFilter = this.nameFilter.value;
+        let nameMatcher = simpleAsteriskedMatcher(nameFilter);
+        let timeNow = new Date().getTime();
+        let running = 0;
+        let scanned = 0;
+        let updated = 0;
+        let failed = 0;
+        let invalidDescriptions = ['', '(None)', '(Unset)'];
+        let update = () => {
+            this.resultArea.innerText = `${running} scans currently running, already scanned ${scanned} models, ${failed} couldn't be found on civitai, ${updated} models updated with new metadata.`;
+        };
+        let removeOne = () => {
+            running--;
+            update();
+        }
+        for (let key of list) {
+            if (key.name == '(None)' || !nameMatcher(key.name)) {
+                continue;
+            }
+            while (running >= this.maxSimulLoads) {
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+            running++;
+            update();
+            genericRequest('DescribeModel', { 'modelName': key.name, 'subtype': key.type }, data => {
+                let model = data.model;
+                if (date != 'all') {
+                    let createTime = new Date(model.time_created).getTime();
+                    let limit = 24 * 60 * 60 * 1000;
+                    if (date == 'week') {
+                        limit *= 7;
+                    }
+                    else if (date == 'month') {
+                        limit *= 31;
+                    }
+                    if (timeNow - createTime > limit) {
+                        removeOne();
+                        return;
+                    }
+                }
+                let civitUrl = getCivitUrlGuessFor(model);
+                if (filter != 'all') {
+                    let allowed = true;
+                    if (filter == 'no_thumbnail' && model.preview_image) {
+                        allowed = false;
+                    }
+                    else if (filter == 'no_description' && !invalidDescriptions.includes(model.description.trim())) {
+                        allowed = false;
+                    }
+                    else if (filter == 'no_author' && model.author) {
+                        allowed = false;
+                    }
+                    else if (filter == 'explicit_url' && !civitUrl) {
+                        allowed = false;
+                    }
+                    if (!allowed) {
+                        removeOne();
+                        return;
+                    }
+                }
+                let doApply = () => {
+                    let [id, versId] = modelDownloader.parseCivitaiUrl(civitUrl);
+                    modelDownloader.getCivitaiMetadata(id, versId, (rawData, rawVersion, metadata, modelType, url, img, imgs) => {
+                        if (!rawData) {
+                            failed++;
+                            removeOne();
+                            return;
+                        }
+                        let backup = JSON.parse(JSON.stringify(model));
+                        if (replace == 'all') {
+                            model.preview_image = img || model.preview_image;
+                            model.title = metadata['modelspec.title'] || model.title;
+                            model.description = metadata['modelspec.description'] || model.description;
+                            model.author = metadata['modelspec.author'] || model.author;
+                            model.date = metadata['modelspec.date'] || model.date;
+                            model.trigger_phrase = metadata['modelspec.trigger_phrase'] || model.trigger_phrase;
+                            if (metadata['modelspec.tags']) {
+                                model.tags = metadata['modelspec.tags'].split(',').map(x => x.trim());
+                            }
+                        }
+                        else if (replace == 'only_missing') {
+                            if (img && !model.preview_image) {
+                                model.preview_image = img;
+                            }
+                            model.title = model.title || metadata['modelspec.title'];
+                            model.description = model.description || metadata['modelspec.description'];
+                            model.author = model.author || metadata['modelspec.author'];
+                            model.date = model.date || metadata['modelspec.date'];
+                            model.trigger_phrase = model.trigger_phrase || metadata['modelspec.trigger_phrase'];
+                            if (metadata['modelspec.tags'] && !model.tags) {
+                                model.tags = metadata['modelspec.tags'].split(',').map(x => x.trim());
+                            }
+                        }
+                        else if (replace == 'only_thumbnail') {
+                            model.preview_image = img || model.preview_image;
+                        }
+                        else if (replace == 'only_text') {
+                            model.title = metadata['modelspec.title'] || model.title;
+                            model.description = metadata['modelspec.description'] || model.description;
+                            model.author = metadata['modelspec.author'] || model.author;
+                            model.date = metadata['modelspec.date'] || model.date;
+                            model.trigger_phrase = metadata['modelspec.trigger_phrase'] || model.trigger_phrase;
+                            if (metadata['modelspec.tags']) {
+                                model.tags = metadata['modelspec.tags'].split(',').map(x => x.trim());
+                            }
+                        }
+                        scanned++;
+                        update();
+                        let tagsMatch = (!model.tags == !backup.tags) && (!model.tags || backup.tags.join(', ') == model.tags.join(', '));
+                        let anyChanged = backup.preview_image != model.preview_image || backup.title != model.title || backup.description != model.description || backup.author != model.author || backup.date != model.date || backup.trigger_phrase != model.trigger_phrase || !tagsMatch;
+                        if (!anyChanged) {
+                            removeOne();
+                            return;
+                        }
+                        console.log(`Model ${key.name} (${key.type}) - change report: image: ${backup.preview_image != model.preview_image}, title: ${backup.title != model.title}, description: ${backup.description != model.description}, author: ${backup.author != model.author}, date: ${backup.date != model.date}, trigger: ${backup.trigger_phrase != model.trigger_phrase}, tags: ${!tagsMatch}`);
+                        let newMetadata = {
+                            'model': key.name,
+                            'subtype': key.type,
+                            'title': model.title || '',
+                            'author': model.author || '',
+                            'type': model.architecture || '',
+                            'description': model.description || '',
+                            'standard_width': model.standard_width || 0,
+                            'standard_height': model.standard_height || 0,
+                            'usage_hint': model.usage_hint || '',
+                            'date': model.date || '',
+                            'license': model.license || '',
+                            'trigger_phrase': model.trigger_phrase || '',
+                            'prediction_type': model.prediction_type || '',
+                            'tags': model.tags ? model.tags.join(', ') : null,
+                            'preview_image': model.preview_image == "imgs/model_placeholder.jpg" ? null : model.preview_image,
+                            'preview_image_metadata': null,
+                            'is_negative_embedding': model.is_negative_embedding
+                        };
+                        genericRequest('EditModelMetadata', newMetadata, data => {
+                            updated++;
+                            removeOne();
+                        }, 0, e => {
+                            failed++;
+                            removeOne();
+                        });
+                    }, model.name);
+                };
+                if (civitUrl) {
+                    doApply();
+                }
+                else {
+                    let applyWithHash = () => {
+                        modelDownloader.searchCivitaiForHash(model.hash, url => {
+                            civitUrl = url;
+                            if (civitUrl) {
+                                doApply();
+                            }
+                            else {
+                                failed++;
+                                removeOne();
+                            }
+                        });
+                    };
+                    if (model.hash) {
+                        applyWithHash();
+                    }
+                    else {
+                        genericRequest('GetModelHash', { 'modelName': key.name, 'subtype': key.type }, data => {
+                            model.hash = data.hash;
+                            applyWithHash();
+                        }, 0, e => { failed++; removeOne(); });
+                    }
+                }
+
+            }, 0, e => { removeOne(); });
+        }
+        while (running > 0) {
+            await new Promise(resolve => setTimeout(resolve, 200));
+        }
+        this.button.disabled = false;
+        this.resultArea.innerText = `All scans completed: ${scanned} models scanned, ${failed} couldn't be found on civitai, ${updated} models updated with new metadata.`;
+    }
+
+    run() {
+        if (!confirm("This may take a long time, and may replace data, and cannot be undone. Your browser must stay open while this runs. Are you sure you want to proceed?")) {
+            return;
+        }
+        let subType = this.subTypeSelector.value;
+        if (subType == 'all') {
+            let list = [];
+            for (let type of Object.keys(coreModelMap)) {
+                let names = coreModelMap[type];
+                for (let name of names) {
+                    list.push({ 'name': name, 'type': type });
+                }
+            }
+            this.runForList(list);
+        }
+        else {
+            let names = coreModelMap[subType];
+            if (names == null) {
+                this.resultArea.innerText = "Invalid subtype.";
+                return;
+            }
+            let list = [];
+            for (let name of names) {
+                list.push({ 'name': name, 'type': subType });
+            }
+            this.runForList(list);
+        }
+    }
+}
+
+modelMetadataScanner = new ModelMetadataScanner();

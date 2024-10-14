@@ -397,7 +397,7 @@ class GenPageBrowserClass {
                 });
                 let textBlock = createDiv(null, 'image-preview-text');
                 textBlock.innerText = desc.display || desc.name;
-                if (textBlock.innerText.length > 40) {
+                if (this.format == "Small Thumbnails" || textBlock.innerText.length > 40) {
                     textBlock.classList.add('image-preview-text-small');
                 }
                 else if (textBlock.innerText.length > 20) {
@@ -552,7 +552,7 @@ class GenPageBrowserClass {
             let buttons = createSpan(`${this.id}-button-container`, 'browser-header-buttons', 
                 `<button id="${this.id}_refresh_button" title="Refresh" class="refresh-button translate translate-no-text">&#x21BB;</button>\n`
                 + `<button id="${this.id}_up_button" class="refresh-button translate translate-no-text" disabled autocomplete="off" title="Go back up 1 folder">&#x21d1;</button>\n`
-                + `<span class="translate">Depth: <input id="${this.id}_depth_input" class="depth-number-input translate translate-no-text" type="number" min="1" max="10" value="${this.depth}" title="Depth of subfolders to show" autocomplete="false"></span>\n`
+                + `<span><span class="translate">Depth</span>: <input id="${this.id}_depth_input" class="depth-number-input translate translate-no-text" type="number" min="1" max="10" value="${this.depth}" title="Depth of subfolders to show" autocomplete="false"></span>\n`
                 + `<span><input id="${this.id}_filter_input" type="text" value="${this.filter}" title="Text filter, only show items that contain this text." rows="1" autocomplete="false" class="translate translate-no-text" placeholder="${translate('Filter...')}"></span>\n`
                 + this.extraHeader);
             let inputArr = buttons.getElementsByTagName('input');
@@ -633,9 +633,13 @@ class GenPageBrowserClass {
             this.folderTreeDiv.innerHTML = '';
             this.contentDiv.innerHTML = '';
             this.headerPath.remove();
+            this.headerCount.remove();
         }
         this.headerPath = this.genPath(path, this.upButton);
         this.headerBar.appendChild(this.headerPath);
+        this.headerCount = createSpan(null, 'browser-header-count');
+        this.headerCount.innerText = files.length;
+        this.headerBar.appendChild(this.headerCount);
         this.buildTreeElements(this.folderTreeDiv, '', this.tree);
         this.buildContentList(this.contentDiv, files);
         this.folderTreeDiv.scrollTop = folderScroll;

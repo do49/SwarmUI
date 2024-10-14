@@ -8,6 +8,7 @@ using SwarmUI.Core;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
 using System.IO;
+using System.Net.Http;
 using System.Reflection;
 
 namespace SwarmUI.WebAPI;
@@ -21,12 +22,15 @@ public static class AdminAPI
         API.RegisterAPICall(ChangeServerSettings, true);
         API.RegisterAPICall(ListLogTypes);
         API.RegisterAPICall(ListRecentLogMessages);
+        API.RegisterAPICall(LogSubmitToPastebin, true);
         API.RegisterAPICall(ShutdownServer, true);
         API.RegisterAPICall(GetServerResourceInfo);
         API.RegisterAPICall(DebugLanguageAdd, true);
         API.RegisterAPICall(DebugGenDocs, true);
         API.RegisterAPICall(ListConnectedUsers);
-        API.RegisterAPICall(UpdateAndRestart);
+        API.RegisterAPICall(UpdateAndRestart, true);
+        API.RegisterAPICall(InstallExtension, true);
+        API.RegisterAPICall(UpdateExtension, true);
     }
 
     public static JObject AutoConfigToParamData(AutoConfiguration config)
@@ -137,7 +141,10 @@ public static class AdminAPI
             {
                 foreach (string path in paths)
                 {
-                    Directory.CreateDirectory(Utilities.CombinePathWithAbsolute(Program.ServerSettings.Paths.ModelRoot, path));
+                    foreach (string subpath in path.Split(';').Where(p => !string.IsNullOrWhiteSpace(p)))
+                    {
+                        Directory.CreateDirectory(Utilities.CombinePathWithAbsolute(Program.ServerSettings.Paths.ModelRoot, subpath));
+                    }
                 }
             }
             catch (Exception e)
@@ -244,6 +251,63 @@ public static class AdminAPI
         }
         result["data"] = messageData;
         return result;
+    }
+
+    [API.APIDescription("Submits current server log info to a pastebin service automatically.",
+        """
+          "url": "a url to the paste here"
+        """)]
+    public static async Task<JObject> LogSubmitToPastebin(Session session,
+        [API.APIParameter("The minimum log level (verbose, debug, info) to include.")] string type)
+    {
+        if (!Enum.TryParse(type, true, out Logs.LogLevel level))
+        {
+            return new JObject() { ["error"] = "Invalid log level type specified." };
+        }
+        Logs.Info($"User {session.User.UserID} is submitted logs above level {level} to pastebin...");
+        List<(Logs.LogLevel, Logs.LogMessage)> messages = [];
+        for (int i = (int)level; i < Logs.Trackers.Length; i++)
+        {
+            messages.AddRange(Logs.Trackers[i].Messages.Select(m => ((Logs.LogLevel)i, m)));
+        }
+        messages.Sort((m1, m2) => m1.Item2.Sequence.CompareTo(m2.Item2.Sequence));
+        StringBuilder rawLogText = new();
+        foreach ((Logs.LogLevel mLevel, Logs.LogMessage message) in messages)
+        {
+            rawLogText.Append($"{message.Time:yyyy-MM-dd HH:mm:ss.fff} [{mLevel}] {message.Message}\n");
+        }
+        string logText = rawLogText.ToString();
+        if (logText.Length > 3 * 1024 * 1024)
+        {
+            logText = logText[0..(100 * 1024)] + "\n\n\n... (log too long, truncated) ..." + logText[^(2500 * 1024)..];
+        }
+        if (logText.Length < 200)
+        {
+            throw new SwarmReadableErrorException($"Something went wrong - logs contain no content! Cannot pastebin: {logText.Length}: {logText}");
+        }
+        FormUrlEncodedContent content = new(new Dictionary<string, string>()
+        {
+            ["pastetype"] = "swarm",
+            ["pastetitle"] = $"SwarmUI v{Utilities.Version} Server Log - {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
+            ["response"] = "micro",
+            ["v"] = "300",
+            ["pastecontents"] = logText
+        });
+        HttpResponseMessage response = await Utilities.UtilWebClient.PostAsync("https://paste.denizenscript.com/New/Swarm", content, Program.GlobalProgramCancel);
+        string responseString = await response.Content.ReadAsStringAsync();
+        responseString = responseString.Trim();
+        if (responseString.StartsWith("<!DOCTYPE html"))
+        {
+            responseString = responseString.Before('\n');
+            if (responseString.Length > 100)
+            {
+                responseString = responseString[0..100] + "...";
+            }
+            Logs.Error($"Failed to submit log to pastebin - server error: {responseString}");
+            return new JObject() { ["error"] = "Failed to submit log to pastebin - server error?" };
+        }
+        Logs.Info($"Log submitted to pastebin, URL: {responseString}");
+        return new JObject() { ["url"] = responseString };
     }
 
     [API.APIDescription("Shuts the server down. Returns success before the server is gone.", "\"success\": true")]
@@ -377,19 +441,68 @@ public static class AdminAPI
             "success": true, // or false if not updated
             "result": "No changes found." // or any other applicable human-readable English message
         """)]
-    public static async Task<JObject> UpdateAndRestart(Session session)
+    public static async Task<JObject> UpdateAndRestart(Session session,
+        [API.APIParameter("True to always rebuild and restart even if there's no visible update.")] bool force = false)
     {
         Logs.Warning($"User {session.User.UserID} requested update-and-restart.");
         string priorHash = (await Utilities.RunGitProcess("rev-parse HEAD")).Trim();
         await Utilities.RunGitProcess("pull");
         string localHash = (await Utilities.RunGitProcess("rev-parse HEAD")).Trim();
         Logs.Debug($"Update checker: prior hash was {priorHash}, new hash is {localHash}");
-        if (priorHash == localHash)
+        if (priorHash == localHash && !force)
         {
             return new JObject() { ["success"] = false, ["result"] = "No changes found." };
         }
         File.WriteAllText("src/bin/must_rebuild", "yes");
         _ = Utilities.RunCheckedTask(() => Program.Shutdown(42));
         return new JObject() { ["success"] = true, ["result"] = "Update successful. Restarting... (please wait a moment, then refresh the page)" };
+    }
+
+    [API.APIDescription("Installs an extension from the known extensions list. Does not trigger a restart. Does signal required rebuild.",
+        """
+            "success": true
+        """)]
+    public static async Task<JObject> InstallExtension(Session session,
+        [API.APIParameter("The name of the extension to install, from the known extensions list.")] string extensionName)
+    {
+        ExtensionsManager.ExtensionInfo ext = Program.Extensions.KnownExtensions.FirstOrDefault(e => e.Name == extensionName);
+        if (ext is null)
+        {
+            return new JObject() { ["error"] = "Unknown extension." };
+        }
+        string extensionsFolder = Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, "src/Extensions");
+        string folder = Utilities.CombinePathWithAbsolute(extensionsFolder, ext.FolderName);
+        if (Directory.Exists(folder))
+        {
+            return new JObject() { ["error"] = "Extension already installed." };
+        }
+        await Utilities.RunGitProcess($"clone {ext.URL}", extensionsFolder);
+        File.WriteAllText("src/bin/must_rebuild", "yes");
+        return new JObject() { ["success"] = true };
+    }
+
+    [API.APIDescription("Triggers an extension update for an installed extension. Does not trigger a restart. Does signal required rebuild.",
+        """
+            "success": true // or false if no update available
+        """)]
+    public static async Task<JObject> UpdateExtension(Session session,
+        [API.APIParameter("The name of the extension to update.")] string extensionName)
+    {
+        Extension ext = Program.Extensions.Extensions.FirstOrDefault(e => e.ExtensionName == extensionName);
+        if (ext is null)
+        {
+            return new JObject() { ["error"] = "Unknown extension." };
+        }
+        string path = Path.GetFullPath(Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, ext.FilePath));
+        string priorHash = (await Utilities.RunGitProcess("rev-parse HEAD", path)).Trim();
+        await Utilities.RunGitProcess("pull", path);
+        string localHash = (await Utilities.RunGitProcess("rev-parse HEAD", path)).Trim();
+        Logs.Debug($"Extension updater: prior hash was {priorHash}, new hash is {localHash}");
+        if (priorHash == localHash)
+        {
+            return new JObject() { ["success"] = false };
+        }
+        File.WriteAllText("src/bin/must_rebuild", "yes");
+        return new JObject() { ["success"] = true };
     }
 }

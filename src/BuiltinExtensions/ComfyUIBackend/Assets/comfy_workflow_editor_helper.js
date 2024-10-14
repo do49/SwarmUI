@@ -43,9 +43,18 @@ function comfyFixMenuLocation() {
     let bodyTop = frame.contentWindow.document.querySelector('.comfyui-body-top');
     let bodyTopMenu = bodyTop ? bodyTop.querySelector('.comfyui-menu') : null;
     if (bodyTopMenu) {
-        swarmComfyMenu.style.top = '3rem';
+        let logo = bodyTopMenu.querySelector('.comfyui-logo');
+        if (logo && !logo.parentElement.querySelector('.swarm-injected-header-spacer')) {
+            let space = document.createElement('span');
+            space.className = 'swarm-injected-header-spacer';
+            space.style.width = swarmComfyMenu.offsetWidth + 'px';
+            logo.parentElement.insertBefore(space, logo.nextSibling);
+        }
+        swarmComfyMenu.style.top = '0rem';
+        swarmComfyMenu.style.left = `81px`;
     }
     else {
+        swarmComfyMenu.style.left = undefined;
         swarmComfyMenu.style.top = '1rem';
         let menu = frame.contentWindow.document.querySelector('.comfy-menu');
         if (menu) {
@@ -451,9 +460,10 @@ function comfyBuildParams(callback) {
                 let subtype = null;
                 let defaultVal = node.inputs['value'];
                 let values = null;
+                let doFixMe = false;
                 switch (node.class_type) {
-                    case 'SwarmInputInteger': type = 'integer'; break;
-                    case 'SwarmInputFloat': type = 'decimal'; break;
+                    case 'SwarmInputInteger': type = 'integer'; doFixMe = true; break;
+                    case 'SwarmInputFloat': type = 'decimal'; doFixMe = true; break;
                     case 'SwarmInputText': type = 'text'; break;
                     case 'SwarmInputModelName':
                         type = 'model';
@@ -484,7 +494,7 @@ function comfyBuildParams(callback) {
                             }
                         }
                     break;
-                    case 'SwarmInputBoolean': type = 'boolean'; break;
+                    case 'SwarmInputBoolean': type = 'boolean'; doFixMe = true; break;
                     case 'SwarmInputImage': type = 'image'; break;
                     default: throw new Error(`Unknown SwarmInput type ${node.class_type}`);
                 }
@@ -534,7 +544,12 @@ function comfyBuildParams(callback) {
                     params[inputId].image_should_resize = node.inputs['auto_resize'];
                     params[inputId].image_always_b64 = true;
                 }
-                node.inputs['value'] = "${" + inputId + ":" + `${node.inputs['value']}`.replaceAll('${', '(').replaceAll('}', ')') + "}";
+                if (doFixMe) {
+                    node.inputs['value'] = "%%_COMFYFIXME_${" + inputId + ":" + `${node.inputs['value']}`.replaceAll('${', '(').replaceAll('}', ')') + "}_ENDFIXME_%%";
+                }
+                else {
+                    node.inputs['value'] = "${" + inputId + ":" + `${node.inputs['value']}`.replaceAll('${', '(').replaceAll('}', ')') + "}";
+                }
             }
             function injectType(id, type) {
                 if (id.startsWith(inputPrefix)) {
@@ -1194,8 +1209,8 @@ function comfySelectWorkflowForBrowser(workflow) {
 }
 
 let comfyWorkflowBrowser = new GenPageBrowserClass('comfy_workflow_browser_container', comfyListWorkflowsForBrowser, 'comfyworkflowbrowser', 'Small Thumbnails', comfyDescribeWorkflowForBrowser, comfySelectWorkflowForBrowser);
-comfyWorkflowBrowser.folderTreeVerticalSpacing = '9rem';
-comfyWorkflowBrowser.splitterMinWidth = 16 * 20;
+comfyWorkflowBrowser.folderTreeVerticalSpacing = '6rem';
+comfyWorkflowBrowser.splitterMinWidth = 375;
 
 /**
  * Called when the user wants to browse their workflows (via button press).

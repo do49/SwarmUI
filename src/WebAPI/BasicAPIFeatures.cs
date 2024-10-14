@@ -156,6 +156,7 @@ public static class BasicAPIFeatures
                     Directory.CreateDirectory("dlbackend/");
                     string path;
                     string extraArgs = "";
+                    bool enablePreviews = true;
                     if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                     {
                         try
@@ -171,7 +172,7 @@ public static class BasicAPIFeatures
                         }
                         catch (HttpRequestException ex)
                         {
-                            Logs.Error($"Comfy download failed: {ex}");
+                            Logs.Error($"Comfy download failed: {ex.ReadableString()}");
                             Logs.Info("Will try alternate download...");
                             await Utilities.DownloadFile("https://github.com/comfyanonymous/ComfyUI/releases/download/latest/ComfyUI_windows_portable_nvidia_or_cpu_nightly_pytorch.7z", "dlbackend/comfyui_dl.7z", updateProgress);
                         }
@@ -216,13 +217,18 @@ public static class BasicAPIFeatures
                         updateProgress(0, 0, 0);
                         await Process.Start(new ProcessStartInfo(Path.GetFullPath("dlbackend/vc_redist.x64.exe"), "/quiet /install /passive /norestart") { UseShellExecute = true }).WaitForExitAsync(Program.GlobalProgramCancel);
                         path = "dlbackend/comfy/ComfyUI/main.py";
+                        string comfyFolderPath = Path.GetFullPath("dlbackend/comfy");
+                        string fetchResp = await Utilities.RunGitProcess($"fetch", $"{comfyFolderPath}/ComfyUI");
+                        Logs.Debug($"ComfyUI Install git fetch response: {fetchResp}");
+                        string checkoutResp = await Utilities.RunGitProcess($"checkout master", $"{comfyFolderPath}/ComfyUI");
+                        Logs.Debug($"ComfyUI Install git checkout master response: {checkoutResp}");
                         if (install_amd)
                         {
+                            enablePreviews = false;
                             Logs.LogLevel level = Logs.MinimumLevel;
                             Logs.MinimumLevel = Logs.LogLevel.Verbose;
                             try
                             {
-                                string comfyFolderPath = Path.GetFullPath("dlbackend/comfy");
                                 await output("Fixing Comfy install...");
                                 // Note: the old Python 3.10 comfy file is needed for AMD, and it has a cursed git config (mandatory auth header? argh) so this is a hack-fix for that
                                 File.WriteAllBytes("dlbackend/comfy/ComfyUI/.git/config", "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tignorecase = true\n[remote \"origin\"]\n\turl = https://github.com/comfyanonymous/ComfyUI\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[gc]\n\tauto = 0\n[branch \"master\"]\n\tremote = origin\n\tmerge = refs/heads/master\n[lfs]\n\trepositoryformatversion = 0\n[remote \"upstream\"]\n\turl = https://github.com/comfyanonymous/ComfyUI.git\n\tfetch = +refs/heads/*:refs/remotes/upstream/*\n".EncodeUTF8());
@@ -272,7 +278,7 @@ public static class BasicAPIFeatures
                         gpu = mostVRAM.ID;
                     }
                     await output("Enabling ComfyUI...");
-                    Program.Backends.AddNewOfType(Program.Backends.BackendTypes["comfyui_selfstart"], new ComfyUISelfStartBackend.ComfyUISelfStartSettings() { StartScript = path, GPU_ID = gpu, ExtraArgs = extraArgs.Trim() });
+                    Program.Backends.AddNewOfType(Program.Backends.BackendTypes["comfyui_selfstart"], new ComfyUISelfStartBackend.ComfyUISelfStartSettings() { StartScript = path, GPU_ID = $"{gpu}", ExtraArgs = extraArgs.Trim(), EnablePreviews = enablePreviews });
                     break;
                 }
             case "none":
@@ -306,7 +312,7 @@ public static class BasicAPIFeatures
                     return null;
                 }
                 await output($"Downloading model from '{file}'... please wait...");
-                string path = Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, Program.ServerSettings.Paths.ModelRoot, Program.ServerSettings.Paths.SDModelFolder);
+                string path = Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, Program.ServerSettings.Paths.ModelRoot, Program.ServerSettings.Paths.SDModelFolder.Split(';')[0]);
                 string folder = $"{path}/{subfolder}";
                 Directory.CreateDirectory(folder);
                 string filename = file.AfterLast('/');
@@ -317,12 +323,12 @@ public static class BasicAPIFeatures
                 catch (IOException ex)
                 {
                     Logs.Error($"Failed to download '{file}' (IO): {ex.GetType().Name}: {ex.Message}");
-                    Logs.Debug($"Download exception: {ex}");
+                    Logs.Debug($"Download exception: {ex.ReadableString()}");
                 }
                 catch (HttpRequestException ex)
                 {
                     Logs.Error($"Failed to download '{file}' (HTTP): {ex.GetType().Name}: {ex.Message}");
-                    Logs.Debug($"Download exception: {ex}");
+                    Logs.Debug($"Download exception: {ex.ReadableString()}");
                 }
                 stepsThusFar++;
                 updateProgress(0, 0, 0);
@@ -349,12 +355,13 @@ public static class BasicAPIFeatures
     /// <summary>API Route to get the user's own base data.</summary>
     public static async Task<JObject> GetMyUserData(Session session)
     {
+        Settings.User.AutoCompleteData settings = session.User.Settings.AutoComplete;
         return new JObject()
         {
             ["user_name"] = session.User.UserID,
             ["presets"] = new JArray(session.User.GetAllPresets().Select(p => p.NetData()).ToArray()),
             ["language"] = session.User.Settings.Language,
-            ["autocompletions"] = string.IsNullOrWhiteSpace(session.User.Settings.AutoCompletionsSource) ? null : new JArray(AutoCompleteListHelper.GetData(session.User.Settings.AutoCompletionsSource, session.User.Settings.AutoCompleteEscapeParens, session.User.Settings.AutoCompleteSuffix))
+            ["autocompletions"] = string.IsNullOrWhiteSpace(settings.Source) ? null : new JArray(AutoCompleteListHelper.GetData(settings.Source, settings.EscapeParens, settings.Suffix, settings.SpacingMode))
         };
     }
 

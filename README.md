@@ -1,10 +1,10 @@
 # SwarmUI
 
-**SwarmUI v0.9.2 Beta**.
+**SwarmUI v0.9.3 Beta**.
 
 Formerly known as StableSwarmUI.
 
-A Modular Stable Diffusion Web-User-Interface, with an emphasis on making powertools easily accessible, high performance, and extensibility.
+A Modular AI Image Generation Web-User-Interface, with an emphasis on making powertools easily accessible, high performance, and extensibility. Supports Stable Diffusion, Flux, etc. AI image models, with plans to support AI video, audio, and more in the future.
 
 ![ui-screenshot](.github/images/swarmui.jpg)
 
@@ -105,7 +105,7 @@ Note: if you're on Windows 10, you may need to manually install [git](https://gi
 - If you don't have Python, install it: `brew install python@3.10` and `brew install virtualenv`
 - Change the directory (`cd`) to the folder where you want to install SwarmUI.
 - Clone the SwarmUI GitHub repository: `git clone https://github.com/mcmonkeyprojects/SwarmUI`.
-- `cd eSwarmUI` and run the installation script: `./launch-macos.sh`.
+- `cd SwarmUI` and run the installation script: `./launch-macos.sh`.
 
 The installation starts now and downloads the Stable Diffusion models from the internet. Depending on your internet connection, this may take several minutes. Wait for your web browser to open the SwarmUI window.
 
@@ -140,14 +140,14 @@ This project:
 - embeds a copy of [7-zip](https://7-zip.org/download.html) (LGPL).
 - has the ability to auto-install [ComfyUI](https://github.com/comfyanonymous/ComfyUI) (GPL).
 - has the option to use as a backend [AUTOMATIC1111/stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui) (AGPL).
-- can automatically install [christophschuhmann/improved-aesthetic-predictor](https://github.com/christophschuhmann/improved-aesthetic-predictor) (Apache2).
-- can automatically install [yuvalkirstain/PickScore](https://github.com/yuvalkirstain/PickScore) (MIT).
+- can automatically install [christophschuhmann/improved-aesthetic-predictor](https://github.com/christophschuhmann/improved-aesthetic-predictor) (Apache2) and [yuvalkirstain/PickScore](https://github.com/yuvalkirstain/PickScore) (MIT).
 - can automatically install [git-for-windows](https://git-scm.com/download/win) (GPLv2).
 - can automatically install MIT/BSD/Apache2/PythonSoftwareFoundation pip packages: [spandrel](https://pypi.org/project/spandrel/), [dill](https://pypi.org/project/dill/), [imageio-ffmpeg](https://pypi.org/project/imageio-ffmpeg/), [opencv-python-headless](https://pypi.org/project/opencv-python-headless/), [matplotlib](https://pypi.org/project/matplotlib/), [rembg](https://pypi.org/project/rembg/), [kornia](https://pypi.org/project/kornia/), [Cython](https://pypi.org/project/Cython/)
 - can automatically install [ultralytics](https://github.com/ultralytics/ultralytics) (AGPL) for `YOLOv8` face detection (ie `SwarmYoloDetection` node or `<segment:yolo-...>` syntax usage may become subject to AGPL terms),
 - can automatically install [insightface](https://github.com/deepinsight/insightface) (MIT) for `IP Adapter - Face` support
 - uses [JSON.NET](https://github.com/JamesNK/Newtonsoft.Json) (MIT), [FreneticUtilities](https://github.com/FreneticLLC/FreneticUtilities) (MIT), [LiteDB](https://github.com/mbdavid/LiteDB) (MIT), [ImageSharp](https://github.com/SixLabors/ImageSharp/) (Apache2 under open-source Split License)
 - embeds copies of web assets from [BootStrap](https://getbootstrap.com/) (MIT), [Select2](https://select2.org/) (MIT), [JQuery](https://jquery.com/) (MIT), [exifr](https://github.com/MikeKovarik/exifr) (MIT).
+- can be used to install some custom node packs, which have individual license notices for any non-pure-FOSS licenses before install.
 - supports user-built extensions which may have their own licenses or legal conditions.
 
 SwarmUI itself is under the MIT license, however some usages may be affected by the GPL variant licenses of connected projects list above, and note that any models used have their own licenses.

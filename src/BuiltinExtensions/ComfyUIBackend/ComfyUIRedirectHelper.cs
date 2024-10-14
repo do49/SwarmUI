@@ -113,7 +113,8 @@ public class ComfyUIRedirectHelper
         ComfyUIBackendExtension.ComfyBackendData backend = ComfyUIBackendExtension.ComfyBackendsDirect().First();
         try
         {
-            JObject result = backend.Client.GetAsync($"{backend.Address}/object_info", Utilities.TimedCancel(TimeSpan.FromMinutes(1))).Result.Content.ReadAsStringAsync().Result.ParseToJson();
+            using CancellationTokenSource cancel = Utilities.TimedCancel(TimeSpan.FromMinutes(1));
+            JObject result = backend.Client.GetAsync($"{backend.APIAddress}/object_info", cancel.Token).Result.Content.ReadAsStringAsync().Result.ParseToJson();
             if (result is not null)
             {
                 LastObjectInfo = result;
@@ -122,7 +123,7 @@ public class ComfyUIRedirectHelper
         }
         catch (Exception ex)
         {
-            Logs.Error($"object_info read failure: {ex}");
+            Logs.Error($"object_info read failure: {ex.ReadableString()}");
             if (LastObjectInfo is null)
             {
                 throw;
@@ -143,7 +144,7 @@ public class ComfyUIRedirectHelper
         {
             allBackends = allBackends.Where(b => b.Backend.BackendData.ID == backendIdInt).ToList();
         }
-        (HttpClient webClient, string address, AbstractT2IBackend backend) = allBackends.FirstOrDefault();
+        (HttpClient webClient, string apiAddress, string webAddress, AbstractT2IBackend backend) = allBackends.FirstOrDefault();
         if (webClient is null)
         {
             context.Response.ContentType = "text/html";
@@ -156,7 +157,7 @@ public class ComfyUIRedirectHelper
         bool shouldReserve = hasMulti && doMultiStr == "reserve";
         if (!shouldReserve && (!hasMulti || doMultiStr != "true"))
         {
-            allBackends = [new(webClient, address, backend)];
+            allBackends = [new(webClient, apiAddress, webAddress, backend)];
         }
         string path = context.Request.Path.Value;
         path = path.After("/ComfyBackendDirect");
@@ -198,14 +199,14 @@ public class ComfyUIRedirectHelper
                 tryFindBackend();
             }
             // (All else fails, default to 0)
-            foreach ((_, string addressLocal, AbstractT2IBackend backendLocal) in allBackends)
+            foreach (ComfyUIBackendExtension.ComfyBackendData localback in allBackends)
             {
-                string scheme = addressLocal.BeforeAndAfter("://", out string addr);
+                string scheme = localback.WebAddress.BeforeAndAfter("://", out string addr);
                 scheme = scheme == "http" ? "ws" : "wss";
                 ClientWebSocket outSocket = new();
                 outSocket.Options.KeepAliveInterval = TimeSpan.FromSeconds(30);
                 await outSocket.ConnectAsync(new Uri($"{scheme}://{addr}/{path}"), Program.GlobalProgramCancel);
-                ComfyClientData client = new() { Address = addressLocal, Backend = backendLocal, Socket = outSocket };
+                ComfyClientData client = new() { Address = localback.WebAddress, Backend = localback.Backend, Socket = outSocket };
                 user.Clients.TryAdd(client, client);
                 tasks.Add(Task.Run(async () =>
                 {
@@ -277,7 +278,7 @@ public class ComfyUIRedirectHelper
                                         }
                                         catch (Exception ex)
                                         {
-                                            Logs.Error($"Failed to parse ComfyUI message: {ex}");
+                                            Logs.Error($"Failed to parse ComfyUI message: {ex.ReadableString()}");
                                         }
                                     }
                                     if (!isJson)
@@ -313,7 +314,7 @@ public class ComfyUIRedirectHelper
                         {
                             return;
                         }
-                        Logs.Debug($"ComfyUI redirection failed (outsocket): {ex}");
+                        Logs.Debug($"ComfyUI redirection failed (outsocket): {ex.ReadableString()}");
                     }
                     finally
                     {
@@ -355,7 +356,7 @@ public class ComfyUIRedirectHelper
                     {
                         return;
                     }
-                    Logs.Debug($"ComfyUI redirection failed (in-socket): {ex}");
+                    Logs.Debug($"ComfyUI redirection failed (in-socket): {ex.ReadableString()}");
                 }
                 finally
                 {
@@ -416,7 +417,8 @@ public class ComfyUIRedirectHelper
                                 if (client?.SID is not null)
                                 {
                                     client.QueueRemaining++;
-                                    address = client.Address;
+                                    webAddress = client.Address;
+                                    backend = client.Backend;
                                     parsed["client_id"] = client.SID;
                                     client.FixUpPrompt(parsed["prompt"] as JObject);
                                     string userId = BasicAPIFeatures.GetUserIdFor(context);
@@ -436,12 +438,14 @@ public class ComfyUIRedirectHelper
                     if (!redirected)
                     {
                         Logs.Debug($"Was not able to redirect Comfy backend direct prompt request");
+                        backend.BackendData.UpdateLastReleaseTime();
+                        Logs.Info($"Sent Comfy backend improper API call direct prompt requested to backend #{backend.BackendData.ID}");
                     }
                     content = Utilities.JSONContent(parsed);
                 }
                 catch (Exception ex)
                 {
-                    Logs.Debug($"ComfyUI redirection failed - prompt json parse: {ex}");
+                    Logs.Debug($"ComfyUI redirection failed - prompt json parse: {ex.ReadableString()}");
                 }
             }
             else if (path == "queue" || path == "interrupt") // eg queue delete
@@ -452,7 +456,7 @@ public class ComfyUIRedirectHelper
                 byte[] inputBytes = inputCopy.ToArray();
                 foreach (ComfyUIBackendExtension.ComfyBackendData back in allBackends)
                 {
-                    HttpRequestMessage dupRequest = new(new HttpMethod("POST"), $"{back.Address}/{path}") { Content = new ByteArrayContent(inputBytes) };
+                    HttpRequestMessage dupRequest = new(new HttpMethod("POST"), $"{back.WebAddress}/{path}") { Content = new ByteArrayContent(inputBytes) };
                     dupRequest.Content.Headers.Add("Content-Type", context.Request.ContentType);
                     tasks.Add(webClient.SendAsync(dupRequest));
                 }
@@ -467,7 +471,7 @@ public class ComfyUIRedirectHelper
             }
             if (response is null)
             {
-                HttpRequestMessage request = new(new HttpMethod("POST"), $"{address}/{path}") { Content = content ?? new StreamContent(context.Request.Body) };
+                HttpRequestMessage request = new(new HttpMethod("POST"), $"{webAddress}/{path}") { Content = content ?? new StreamContent(context.Request.Body) };
                 if (content is null)
                 {
                     request.Content.Headers.Add("Content-Type", context.Request.ContentType ?? "application/json");
@@ -480,9 +484,9 @@ public class ComfyUIRedirectHelper
             if (path.StartsWith("view?filename="))
             {
                 List<Task<HttpResponseMessage>> requests = [];
-                foreach ((HttpClient clientLocal, string addressLocal, AbstractT2IBackend backendLocal) in allBackends)
+                foreach (ComfyUIBackendExtension.ComfyBackendData localBack in allBackends)
                 {
-                    requests.Add(clientLocal.SendAsync(new(new(context.Request.Method), $"{addressLocal}/{path}")));
+                    requests.Add(localBack.Client.SendAsync(new(new(context.Request.Method), $"{localBack.WebAddress}/{path}")));
                 }
                 await Task.WhenAll(requests);
                 response = requests.Select(r => r.Result).FirstOrDefault(r => r.StatusCode == HttpStatusCode.OK) ?? requests.First().Result;
@@ -498,7 +502,7 @@ public class ComfyUIRedirectHelper
             }
             else if (path == "user.css")
             {
-                string remoteUserThemeText = await webClient.GetStringAsync($"{address}/user.css");
+                string remoteUserThemeText = await webClient.GetStringAsync($"{webAddress}/user.css");
                 string userId = BasicAPIFeatures.GetUserIdFor(context);
                 User user = Program.Sessions.GetUser(userId);
                 string theme = user.Settings.Theme ?? Program.ServerSettings.DefaultUser.Theme;
@@ -522,7 +526,7 @@ public class ComfyUIRedirectHelper
             }
             else
             {
-                response = await webClient.SendAsync(new(new(context.Request.Method), $"{address}/{path}"));
+                response = await webClient.SendAsync(new(new(context.Request.Method), $"{webAddress}/{path}"));
             }
         }
         int code = (int)response.StatusCode;
@@ -532,8 +536,14 @@ public class ComfyUIRedirectHelper
         }
         Logs.Verbose($"Comfy Redir status code {code} from {context.Response.StatusCode} and type {response.Content.Headers.ContentType} for {context.Request.Method} '{path}'");
         context.Response.StatusCode = code;
-        context.Response.ContentType = response.Content.Headers.ContentType.ToString();
-        await response.Content.CopyToAsync(context.Response.Body);
+        if (response.Content is not null)
+        {
+            if (response.Content.Headers.ContentType is not null)
+            {
+                context.Response.ContentType = response.Content.Headers.ContentType.ToString();
+            }
+            await response.Content.CopyToAsync(context.Response.Body);
+        }
         await context.Response.CompleteAsync();
     }
 }

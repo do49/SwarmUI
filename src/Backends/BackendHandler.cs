@@ -358,6 +358,7 @@ public class BackendHandler
         await ShutdownBackendCleanly(data);
         newSettings = data.Backend.SettingsRaw.ExcludeSecretValuesThatMatch(newSettings, "\t<secret>");
         data.Backend.SettingsRaw.Load(newSettings);
+        Logs.Verbose($"Settings applied, now: {data.Backend.SettingsRaw.Save(true)}");
         if (title is not null)
         {
             data.Backend.Title = title;
@@ -419,7 +420,7 @@ public class BackendHandler
             {
                 return;
             }
-            Console.WriteLine($"Could not read Backends save file: {ex}");
+            Console.WriteLine($"Could not read Backends save file: {ex.ReadableString()}");
             return;
         }
         if (file is null)
@@ -513,7 +514,7 @@ public class BackendHandler
                 {
                     ex = aex.InnerException;
                 }
-                string errorMessage = $"{ex}";
+                string errorMessage = ex.ReadableString();
                 if (ex is HttpRequestException hrex && hrex.Message.StartsWith("No connection could be made because the target machine actively refused it"))
                 {
                     errorMessage = $"Connection refused - is the backend running, or is the address correct? (HttpRequestException: {ex.Message})";
@@ -545,7 +546,7 @@ public class BackendHandler
                     }
                     catch (Exception ex)
                     {
-                        Logs.Error($"Error while reassigning loaded models list: {ex}");
+                        Logs.Error($"Error while reassigning loaded models list: {ex.ReadableString()}");
                     }
                 }
                 T2IBackendData[] loading = [.. T2IBackends.Values.Where(b => b.Backend.LoadStatusReport is not null && b.Backend.LoadStatusReport.Count > 1)];
@@ -592,7 +593,7 @@ public class BackendHandler
             }
             catch (Exception ex)
             {
-                Logs.Error($"Error in backend init monitor: {ex}");
+                Logs.Error($"Error in backend init monitor: {ex.ReadableString()}");
             }
             NewBackendInitSignal.WaitAsync(TimeSpan.FromSeconds(2), Program.GlobalProgramCancel).Wait();
         }
@@ -680,7 +681,7 @@ public class BackendHandler
             }
             catch (Exception ex)
             {
-                Logs.Error($"Error loading model on backend {backend.ID} ({backend.Backend.HandlerTypeData.Name}): {ex}");
+                Logs.Error($"Error loading model on backend {backend.ID} ({backend.Backend.HandlerTypeData.Name}): {ex.ReadableString()}");
             }
             backend.ReserveModelLoad = false;
         }
@@ -968,14 +969,7 @@ public class BackendHandler
                 {
                     request.Failure = ae.InnerException;
                 }
-                if (request.Failure is SwarmReadableErrorException)
-                {
-                    Logs.Error($"[BackendHandler] Backend request #{request.ID} failed: {request.Failure.Message}");
-                }
-                else
-                {
-                    Logs.Error($"[BackendHandler] Backend request #{request.ID} failed: {request.Failure}");
-                }
+                Logs.Error($"[BackendHandler] Backend request #{request.ID} failed: {request.Failure.ReadableString()}");
                 throw request.Failure;
             }
             if (request.Cancel.IsCancellationRequested || Program.GlobalProgramCancel.IsCancellationRequested)
@@ -1053,14 +1047,7 @@ public class BackendHandler
                             ex = ae.InnerException;
                         }
                         request.Failure = ex;
-                        if (ex is SwarmReadableErrorException)
-                        {
-                            Logs.Error($"[BackendHandler] Backend request #{request.ID} failed: {ex.Message}");
-                        }
-                        else
-                        {
-                            Logs.Error($"[BackendHandler] Backend request #{request.ID} failed: {ex}");
-                        }
+                        Logs.Error($"[BackendHandler] Backend request #{request.ID} failed: {ex.ReadableString()}");
                     }
                     if (request.Result is not null || request.Failure is not null)
                     {
@@ -1105,7 +1092,7 @@ public class BackendHandler
             }
             catch (Exception ex)
             {
-                Logs.Error($"Backend handler loop error: {ex}");
+                Logs.Error($"Backend handler loop error: {ex.ReadableString()}");
                 if (Program.GlobalProgramCancel.IsCancellationRequested)
                 {
                     Task.Delay(500).Wait();
@@ -1225,14 +1212,7 @@ public class BackendHandler
                             {
                                 ex = ae.InnerException;
                             }
-                            if (ex is SwarmReadableErrorException)
-                            {
-                                Logs.Error($"[BackendHandler] backend #{availableBackend.ID} failed to load model with error: {ex.Message}");
-                            }
-                            else
-                            {
-                                Logs.Error($"[BackendHandler] backend #{availableBackend.ID} failed to load model with error: {ex}");
-                            }
+                            Logs.Error($"[BackendHandler] backend #{availableBackend.ID} failed to load model with error: {ex.ReadableString()}");
                         }
                         finally
                         {

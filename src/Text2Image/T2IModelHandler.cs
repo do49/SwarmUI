@@ -89,6 +89,9 @@ public class T2IModelHandler
 
         /// <summary>Special cache of what text encoders the model appears to contain. Primarily for SD3 which has optional text encoders.</summary>
         public string TextEncoders { get; set; }
+
+        /// <summary>Special format indicators, such as "bnb_nf4".</summary>
+        public string SpecialFormat { get; set; }
     }
 
     public T2IModelHandler()
@@ -213,6 +216,7 @@ public class T2IModelHandler
             foreach (string path in FolderPaths)
             {
                 AddAllFromFolder(path, "");
+                Logs.Debug($"Have {Models.Count} {ModelType} models.");
             }
             if (UnathorizedAccessSet.Any())
             {
@@ -276,100 +280,8 @@ public class T2IModelHandler
         }
         catch (Exception ex)
         {
-            Logs.Error($"Failed to reset metadata for model '{model.RawFilePath}': {ex}");
+            Logs.Error($"Failed to reset metadata for model '{model.RawFilePath}': {ex.ReadableString()}");
             throw;
-        }
-    }
-
-    public void ApplyNewMetadataDirectly(T2IModel model)
-    {
-        lock (ModificationLock)
-        {
-            if (model.Metadata is null)
-            {
-                return;
-            }
-            string swarmjspath = $"{model.RawFilePath.BeforeLast('.')}.swarm.json";
-            if (File.Exists(swarmjspath))
-            {
-                File.Delete(swarmjspath);
-            }
-            if ((!model.RawFilePath.EndsWith(".safetensors") && !model.RawFilePath.EndsWith(".sft")) || Program.ServerSettings.Metadata.EditMetadataWriteJSON)
-            {
-                File.WriteAllText(swarmjspath, model.ToNetObject("modelspec.").ToString());
-                return;
-            }
-            Logs.Debug($"Will reapply metadata for model {model.RawFilePath}");
-            using FileStream reader = File.OpenRead(model.RawFilePath);
-            byte[] headerLen = new byte[8];
-            reader.ReadExactly(headerLen, 0, 8);
-            long len = BitConverter.ToInt64(headerLen, 0);
-            if (len < 0 || len > 100 * 1024 * 1024)
-            {
-                Logs.Warning($"Model {model.Name} has invalid metadata length {len}.");
-                File.WriteAllText(swarmjspath, model.ToNetObject("modelspec.").ToString());
-                return;
-            }
-            byte[] header = new byte[len];
-            reader.ReadExactly(header, 0, (int)len);
-            string headerStr = Encoding.UTF8.GetString(header);
-            JObject json = JObject.Parse(headerStr);
-            long pos = reader.Position;
-            JObject metaHeader = (json["__metadata__"] as JObject) ?? [];
-            if (model.Metadata.Hash is null)
-            {
-                // Metadata fix for when we generated hashes into the file metadata headers, but did not save them into the metadata cache
-                model.Metadata.Hash = (metaHeader?.ContainsKey("modelspec.hash_sha256") ?? false) ? metaHeader.Value<string>("modelspec.hash_sha256") : "0x" + Utilities.BytesToHex(SHA256.HashData(reader));
-                ResetMetadataFrom(model);
-            }
-            void specSet(string key, string val)
-            {
-                if (!string.IsNullOrWhiteSpace(val))
-                {
-                    metaHeader[$"modelspec.{key}"] = val;
-                }
-                else
-                {
-                    metaHeader.Remove($"modelspec.{key}");
-                }
-            }
-            specSet("sai_model_spec", "1.0.0");
-            specSet("title", model.Metadata.Title);
-            specSet("architecture", model.Metadata.ModelClassType);
-            specSet("author", model.Metadata.Author);
-            specSet("description", model.Metadata.Description);
-            specSet("thumbnail", model.Metadata.PreviewImage);
-            specSet("license", model.Metadata.License);
-            specSet("usage_hint", model.Metadata.UsageHint);
-            specSet("trigger_phrase", model.Metadata.TriggerPhrase);
-            specSet("tags", string.Join(",", model.Metadata.Tags ?? []));
-            specSet("merged_from", model.Metadata.MergedFrom);
-            specSet("date", model.Metadata.Date);
-            specSet("preprocessor", model.Metadata.Preprocessor);
-            specSet("resolution", $"{model.Metadata.StandardWidth}x{model.Metadata.StandardHeight}");
-            specSet("prediction_type", model.Metadata.PredictionType);
-            specSet("hash_sha256", model.Metadata.Hash);
-            if (model.Metadata.IsNegativeEmbedding)
-            {
-                specSet("is_negative_embedding", "true");
-            }
-            json["__metadata__"] = metaHeader;
-            {
-                using FileStream writer = File.OpenWrite(model.RawFilePath + ".tmp");
-                byte[] headerBytes = Encoding.UTF8.GetBytes(json.ToString(Newtonsoft.Json.Formatting.None));
-                writer.Write(BitConverter.GetBytes(headerBytes.LongLength));
-                writer.Write(headerBytes);
-                reader.Seek(pos, SeekOrigin.Begin);
-                reader.CopyTo(writer);
-                reader.Dispose();
-            }
-            // Journalling replace to prevent data loss in event of a crash.
-            DateTime createTime = File.GetCreationTimeUtc(model.RawFilePath);
-            File.Move(model.RawFilePath, model.RawFilePath + ".tmp2");
-            File.Move(model.RawFilePath + ".tmp", model.RawFilePath);
-            File.Delete(model.RawFilePath + ".tmp2");
-            File.SetCreationTimeUtc(model.RawFilePath, createTime);
-            Logs.Debug($"Completed metadata update for {model.RawFilePath}");
         }
     }
 
@@ -398,7 +310,7 @@ public class T2IModelHandler
             catch (Exception ex)
             {
                 Logs.Error($"Caught an exception trying to load legacy model thumbnail at '{prefix}{suffix}'");
-                Logs.Debug($"Details for above error {ex}");
+                Logs.Debug($"Details for above error {ex.ReadableString()}");
             }
         }
         return null;
@@ -435,7 +347,7 @@ public class T2IModelHandler
             }
             catch (Exception ex)
             {
-                Logs.Debug($"Failed to load metadata for {model.Name} from cache:\n{ex}");
+                Logs.Debug($"Failed to load metadata for {model.Name} from cache:\n{ex.ReadableString()}");
                 metadata = null;
             }
         }
@@ -536,6 +448,23 @@ public class T2IModelHandler
             }
             string altTriggerPhrase = triggerPhrases.JoinString(", ");
             T2IModelClass clazz = T2IModelClassSorter.IdentifyClassFor(model, headerData);
+            string specialFormat = null;
+            foreach (string key in headerData.Properties().Select(p => p.Name))
+            {
+                if (key.Contains("bitsandbytes__nf4"))
+                {
+                    specialFormat = "bnb_nf4";
+                    break;
+                }
+            }
+            if (model.Name.EndsWith(".gguf"))
+            {
+                specialFormat = "gguf";
+            }
+            if (specialFormat is not null)
+            {
+                Logs.Debug($"Model {model.Name} has special format '{specialFormat}'");
+            }
             string img = metaHeader?.Value<string>("modelspec.preview_image") ?? metaHeader?.Value<string>("modelspec.thumbnail") ?? metaHeader?.Value<string>("thumbnail") ?? metaHeader?.Value<string>("preview_image");
             if (img is not null && !img.StartsWith("data:image/"))
             {
@@ -557,7 +486,7 @@ public class T2IModelHandler
             img ??= autoImg;
             string[] tags = null;
             JToken tagsTok = metaHeader.Property("modelspec.tags")?.Value;
-            if (tagsTok is not null)
+            if (tagsTok is not null && tagsTok.Type != JTokenType.Null)
             {
                 if (tagsTok.Type == JTokenType.Array)
                 {
@@ -568,6 +497,21 @@ public class T2IModelHandler
                     tags = tagsTok.Value<string>().Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
                 }
             }
+            static string pickBest(params string[] options)
+            {
+                foreach (string opt in options)
+                {
+                    if (!string.IsNullOrWhiteSpace(opt))
+                    {
+                        return opt;
+                    }
+                }
+                if (options.Length > 0)
+                {
+                    return options[0];
+                }
+                return null;
+            }
             metadata = new()
             {
                 ModelFileVersion = modified,
@@ -575,23 +519,24 @@ public class T2IModelHandler
                 TimeCreated = new DateTimeOffset(File.GetCreationTimeUtc(model.RawFilePath)).ToUnixTimeMilliseconds(),
                 ModelName = modelCacheId,
                 ModelClassType = clazz?.ID,
-                Title = metaHeader?.Value<string>("modelspec.title") ?? metaHeader?.Value<string>("title") ?? altName ?? fileName.BeforeLast('.'),
-                Author = metaHeader?.Value<string>("modelspec.author") ?? metaHeader?.Value<string>("author"),
-                Description = metaHeader?.Value<string>("modelspec.description") ?? metaHeader?.Value<string>("description") ?? altDescription,
+                Title = pickBest(metaHeader?.Value<string>("modelspec.title"), metaHeader?.Value<string>("title"), altName, fileName.BeforeLast('.')),
+                Author = pickBest(metaHeader?.Value<string>("modelspec.author"), metaHeader?.Value<string>("author")),
+                Description = pickBest(metaHeader?.Value<string>("modelspec.description"), metaHeader?.Value<string>("description"), altDescription),
                 PreviewImage = img,
                 StandardWidth = width,
                 StandardHeight = height,
-                UsageHint = metaHeader?.Value<string>("modelspec.usage_hint") ?? metaHeader?.Value<string>("usage_hint"),
-                MergedFrom = metaHeader?.Value<string>("modelspec.merged_from") ?? metaHeader?.Value<string>("merged_from"),
-                TriggerPhrase = metaHeader?.Value<string>("modelspec.trigger_phrase") ?? metaHeader?.Value<string>("trigger_phrase") ?? altTriggerPhrase,
-                License = metaHeader?.Value<string>("modelspec.license") ?? metaHeader?.Value<string>("license"),
-                Date = metaHeader?.Value<string>("modelspec.date") ?? metaHeader?.Value<string>("date"),
-                Preprocessor = metaHeader?.Value<string>("modelspec.preprocessor") ?? metaHeader?.Value<string>("preprocessor"),
+                UsageHint = pickBest(metaHeader?.Value<string>("modelspec.usage_hint"), metaHeader?.Value<string>("usage_hint")),
+                MergedFrom = pickBest(metaHeader?.Value<string>("modelspec.merged_from"), metaHeader?.Value<string>("merged_from")),
+                TriggerPhrase = pickBest(metaHeader?.Value<string>("modelspec.trigger_phrase"), metaHeader?.Value<string>("trigger_phrase"), altTriggerPhrase),
+                License = pickBest(metaHeader?.Value<string>("modelspec.license"), metaHeader?.Value<string>("license")),
+                Date = pickBest(metaHeader?.Value<string>("modelspec.date"), metaHeader?.Value<string>("date")),
+                Preprocessor = pickBest(metaHeader?.Value<string>("modelspec.preprocessor"), metaHeader?.Value<string>("preprocessor")),
                 Tags = tags,
-                IsNegativeEmbedding = (metaHeader?.Value<string>("modelspec.is_negative_embedding") ?? metaHeader?.Value<string>("is_negative_embedding")) == "true",
-                PredictionType = metaHeader?.Value<string>("modelspec.prediction_type") ?? metaHeader?.Value<string>("prediction_type"),
-                Hash = metaHeader?.Value<string>("modelspec.hash_sha256") ?? metaHeader?.Value<string>("hash_sha256"),
-                TextEncoders = textEncs
+                IsNegativeEmbedding = (pickBest(metaHeader?.Value<string>("modelspec.is_negative_embedding"), metaHeader?.Value<string>("is_negative_embedding")) ?? "false") == "true",
+                PredictionType = pickBest(metaHeader?.Value<string>("modelspec.prediction_type"), metaHeader?.Value<string>("prediction_type")),
+                Hash = pickBest(metaHeader?.Value<string>("modelspec.hash_sha256"), metaHeader?.Value<string>("hash_sha256")),
+                TextEncoders = textEncs,
+                SpecialFormat = pickBest(metaHeader?.Value<string>("modelspec.special_format"), metaHeader?.Value<string>("special_format"), specialFormat)
             };
             lock (MetadataLock)
             {
@@ -601,9 +546,13 @@ public class T2IModelHandler
                 }
                 catch (Exception ex)
                 {
-                    Logs.Warning($"Error handling metadata database for model {model.RawFilePath}: {ex}");
+                    Logs.Warning($"Error handling metadata database for model {model.RawFilePath}: {ex.ReadableString()}");
                 }
             }
+        }
+        if (!string.IsNullOrWhiteSpace(metadata.ModelClassType))
+        {
+            metadata.ModelClassType = T2IModelClassSorter.Remaps.GetValueOrDefault(metadata.ModelClassType, metadata.ModelClassType);
         }
         if (metadata.TimeModified == 0)
         {
@@ -650,21 +599,18 @@ public class T2IModelHandler
             }
             catch (Exception ex)
             {
-                Logs.Warning($"Error while scanning model {ModelType} subfolder '{path}': {ex}");
+                Logs.Warning($"Error while scanning model {ModelType} subfolder '{path}': {ex.ReadableString()}");
             }
         });
         Parallel.ForEach(Directory.EnumerateFiles(actualFolder), file =>
         {
             string fn = file.Replace('\\', '/').AfterLast('/');
             string fullFilename = $"{prefix}{fn}";
-            if (fn.EndsWith(".safetensors") || fn.EndsWith(".sft") || fn.EndsWith(".engine"))
+            if (T2IModel.NativelySupportedModelExtensions.Contains(fn.AfterLast('.')))
             {
-                T2IModel model = new()
+                T2IModel model = new(this, pathBase, file, fullFilename)
                 {
-                    OriginatingFolderPath = pathBase,
-                    Name = fullFilename,
                     Title = fullFilename.AfterLast('/'),
-                    RawFilePath = file,
                     Description = "(Metadata not yet loaded.)",
                     PreviewImage = "imgs/model_placeholder.jpg",
                 };
@@ -683,16 +629,13 @@ public class T2IModelHandler
                     {
                         throw;
                     }
-                    Logs.Warning($"Failed to load metadata for {fullFilename}:\n{ex}");
+                    Logs.Warning($"Failed to load metadata for {fullFilename}:\n{ex.ReadableString()}");
                 }
             }
             else if (fn.EndsWith(".ckpt") || fn.EndsWith(".pt") || fn.EndsWith(".pth"))
             {
-                T2IModel model = new()
+                T2IModel model = new(this, pathBase, file, fullFilename)
                 {
-                    OriginatingFolderPath = pathBase,
-                    Name = fullFilename,
-                    RawFilePath = file,
                     Description = "(None, use '.safetensors' to enable metadata descriptions)",
                     PreviewImage = "imgs/legacy_ckpt.jpg",
                 };

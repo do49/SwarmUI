@@ -210,6 +210,14 @@ public class WorkflowGeneratorSteps
                         ["channel"] = "red"
                     });
                     g.EnableDifferential();
+                    if (g.UserInput.TryGet(T2IParamTypes.MaskGrow, out int growAmount))
+                    {
+                        maskImageNode = g.CreateNode("SwarmMaskGrow", new JObject()
+                        {
+                            ["mask"] = new JArray() { maskImageNode, 0 },
+                            ["grow"] = growAmount,
+                        });
+                    }
                     if (g.UserInput.TryGet(T2IParamTypes.MaskBlur, out int blurAmount))
                     {
                         maskImageNode = g.CreateNode("SwarmMaskBlur", new JObject()
@@ -335,7 +343,7 @@ public class WorkflowGeneratorSteps
             {
                 return;
             }
-            string filePath = Utilities.CombinePathWithAbsolute(Program.ServerSettings.Paths.ModelRoot, Program.ServerSettings.Paths.SDClipVisionFolder, name);
+            string filePath = Utilities.CombinePathWithAbsolute(Program.ServerSettings.Paths.ModelRoot, Program.ServerSettings.Paths.SDClipVisionFolder.Split(';')[0], name);
             g.DownloadModel(name, filePath, url);
             WorkflowGenerator.VisionModelsValid.Add(name);
         }
@@ -473,7 +481,7 @@ public class WorkflowGeneratorSteps
                             {
                                 return;
                             }
-                            string filePath = Utilities.CombinePathWithAbsolute(Program.ServerSettings.Paths.ModelRoot, Program.ServerSettings.Paths.SDLoraFolder, $"ipadapter/{name}");
+                            string filePath = Utilities.CombinePathWithAbsolute(Program.ServerSettings.Paths.ModelRoot, Program.ServerSettings.Paths.SDLoraFolder.Split(';')[0], $"ipadapter/{name}");
                             g.DownloadModel(name, filePath, url);
                             WorkflowGenerator.IPAdapterModelsValid.Add($"LORA-{name}");
                         }
@@ -728,28 +736,28 @@ public class WorkflowGeneratorSteps
                                 {
                                     ["image"] = new JArray() { $"{imageNode}", 0 }
                                 };
-                                foreach ((string key, JToken data) in (JObject)objectData["input"]["required"])
+                                foreach (string type in new[] { "required", "optional" })
                                 {
-                                    if (key == "mask")
+                                    if (((JObject)objectData["input"]).TryGetValue(type, out JToken set))
                                     {
-                                        if (g.FinalMask is null)
+                                        foreach ((string key, JToken data) in (JObject)set)
                                         {
-                                            throw new SwarmUserErrorException($"ControlNet Preprocessor '{preprocessor}' requires a mask. Please set a mask under the Init Image parameter group.");
-                                        }
-                                        n["inputs"]["mask"] = g.FinalMask;
-                                    }
-                                    else if (data.Count() == 2 && data[1] is JObject settings && settings.TryGetValue("default", out JToken defaultValue))
-                                    {
-                                        n["inputs"][key] = defaultValue;
-                                    }
-                                }
-                                if (((JObject)objectData["input"]).TryGetValue("optional", out JToken optional))
-                                {
-                                    foreach ((string key, JToken data) in (JObject)optional)
-                                    {
-                                        if (data.Count() == 2 && data[1] is JObject settings && settings.TryGetValue("default", out JToken defaultValue))
-                                        {
-                                            n["inputs"][key] = defaultValue;
+                                            if (key == "mask")
+                                            {
+                                                if (g.FinalMask is null)
+                                                {
+                                                    throw new SwarmUserErrorException($"ControlNet Preprocessor '{preprocessor}' requires a mask. Please set a mask under the Init Image parameter group.");
+                                                }
+                                                n["inputs"]["mask"] = g.FinalMask;
+                                            }
+                                            else if (key == "resolution")
+                                            {
+                                                n["inputs"]["resolution"] = (int)Math.Round(Math.Sqrt(g.UserInput.GetImageWidth() * g.UserInput.GetImageHeight()) / 64) * 64;
+                                            }
+                                            else if (data.Count() == 2 && data[1] is JObject settings && settings.TryGetValue("default", out JToken defaultValue))
+                                            {
+                                                n["inputs"][key] = defaultValue;
+                                            }
                                         }
                                     }
                                 }
@@ -787,7 +795,7 @@ public class WorkflowGeneratorSteps
                         });
                     }
                     string applyNode;
-                    if (g.CurrentCompatClass() == "stable-diffusion-v3-medium")
+                    if (g.IsSD3() || g.IsFlux())
                     {
                         applyNode = g.CreateNode("ControlNetApplySD3", new JObject()
                         {
@@ -858,7 +866,7 @@ public class WorkflowGeneratorSteps
             else
             {
                 g.CreateKSampler(g.FinalModel, g.FinalPrompt, g.FinalNegativePrompt, g.FinalLatentImage, cfg, steps, startStep, endStep,
-                    g.UserInput.Get(T2IParamTypes.Seed), g.UserInput.Get(T2IParamTypes.RefinerMethod, "none") == "StepSwapNoisy", g.MainSamplerAddNoise, id: "10");
+                    g.UserInput.Get(T2IParamTypes.Seed), g.UserInput.Get(T2IParamTypes.RefinerMethod, "none") == "StepSwapNoisy", g.MainSamplerAddNoise, id: "10", isFirstSampler: true);
                 if (g.UserInput.Get(T2IParamTypes.UseReferenceOnly, false))
                 {
                     string fromBatch = g.CreateNode("LatentFromBatch", new JObject()
@@ -1120,6 +1128,10 @@ public class WorkflowGeneratorSteps
             PromptRegion.Part[] parts = new PromptRegion(g.UserInput.Get(T2IParamTypes.Prompt, "")).Parts.Where(p => p.Type == PromptRegion.PartType.ClearSegment).ToArray();
             foreach (PromptRegion.Part part in parts)
             {
+                if (g.UserInput.Get(T2IParamTypes.SaveIntermediateImages, false))
+                {
+                    g.CreateImageSaveNode(g.FinalImageOut, g.GetStableDynamicID(50000, 0));
+                }
                 string segmentNode = g.CreateNode("SwarmClipSeg", new JObject()
                 {
                     ["images"] = g.FinalImageOut,
@@ -1154,6 +1166,10 @@ public class WorkflowGeneratorSteps
             }
             if (g.UserInput.Get(T2IParamTypes.RemoveBackground, false))
             {
+                if (g.UserInput.Get(T2IParamTypes.SaveIntermediateImages, false))
+                {
+                    g.CreateImageSaveNode(g.FinalImageOut, g.GetStableDynamicID(50000, 0));
+                }
                 string removed = g.CreateNode("SwarmRemBg", new JObject()
                 {
                     ["images"] = g.FinalImageOut

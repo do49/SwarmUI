@@ -12,6 +12,7 @@ using SwarmUI.Text2Image;
 using SwarmUI.Utils;
 using SwarmUI.WebAPI;
 using System.IO;
+using System.Net;
 
 namespace SwarmUI.Core;
 
@@ -46,6 +47,9 @@ public class WebServer
 
     /// <summary>Extra file content added by extensions.</summary>
     public Dictionary<string, string> ExtensionSharedFiles = [];
+
+    /// <summary>Extra binary file content added by extensions.</summary>
+    public Dictionary<string, Lazy<byte[]>> ExtensionAssets = [];
 
     /// <summary>Extra content for the page header. Automatically set based on extensions.</summary>
     public static HtmlString PageHeaderExtra = new("");
@@ -87,6 +91,7 @@ public class WebServer
         RegisteredThemes.Clear();
         RegisterTheme(new("modern_dark", "Modern Dark", ["/css/themes/modern.css", "/css/themes/modern_dark.css"], true));
         RegisterTheme(new("modern_light", "Modern Light", ["/css/themes/modern.css", "/css/themes/modern_light.css"], false));
+        RegisterTheme(new("solarized", "Solarized Light", ["/css/themes/modern.css", "/css/themes/solarized.css"], false));
         RegisterTheme(new("dark_dreams", "Dark Dreams", ["/css/themes/dark_dreams.css"], true));
         RegisterTheme(new("gravity_blue", "Gravity Blue", ["/css/themes/gravity_blue.css"], true));
         RegisterTheme(new("cyber_swarm", "Cyber Swarm", ["/css/themes/cyber_swarm.css"], true));
@@ -107,6 +112,55 @@ public class WebServer
         builder.Services.AddResponseCompression();
         builder.Logging.SetMinimumLevel(LogLevel);
         WebApp = builder.Build();
+        WebApp.Use(async (context, next) =>
+        {
+            if (context.Request.Headers.Host.Any() && context.Request.Headers.Origin.Any())
+            {
+                string host = context.Request.Headers.Host[0].ToLowerFast();
+                string origin = context.Request.Headers.Origin[0].ToLowerFast();
+                Uri uri = new(origin);
+                string originMain = uri.Authority.ToLowerFast();
+                if (host != originMain)
+                {
+                    // TODO: Instate this check fully only after comfy's version is stable.
+                    // Swarm doesn't technically need it (as we have session token checks) but still better to validate
+                    /*
+                    context.Response.StatusCode = 403;
+                    await context.Response.WriteAsync("Forbidden");
+                    return;
+                    */
+                }
+            }
+            string authKey = Program.ServerSettings.Network.RequiredAuthorization;
+            if (!string.IsNullOrWhiteSpace(authKey))
+            {
+                string authHeader = context.Request.Headers.Authorization.FirstOrDefault();
+                if (authHeader != authKey)
+                {
+                    IPAddress addr = context.Connection.RemoteIpAddress;
+                    string remoteIp = addr.ToString();
+                    if (addr.IsIPv4MappedToIPv6)
+                    {
+                        remoteIp = addr.MapToIPv4().ToString();
+                    }
+                    if (!Program.ServerSettings.Network.AuthBypassIPs.SplitFast(',').Contains(remoteIp))
+                    {
+                        if (string.IsNullOrWhiteSpace(authHeader))
+                        {
+                            Logs.Debug($"Unauthorized request from {remoteIp} (no auth header)");
+                        }
+                        else
+                        {
+                            Logs.Debug($"Unauthorized request from {remoteIp} (auth header len {authHeader.Length}, expected {authKey.Length})");
+                        }
+                        context.Response.StatusCode = 401;
+                        await context.Response.WriteAsync("Unauthorized");
+                        return;
+                    }
+                }
+            }
+            await next();
+        });
         WebApp.UseResponseCompression();
         timer.Check("[Web] WebApp build");
         if (WebApp.Environment.IsDevelopment())
@@ -133,8 +187,33 @@ public class WebServer
             string path = context.Request.Path.Value.ToLowerFast();
             if (referrer.StartsWith("comfybackenddirect/") && !path.StartsWith("/comfybackenddirect/"))
             {
-                context.Request.Path = $"/ComfyBackendDirect{context.Request.Path}";
                 Logs.Debug($"ComfyBackendDirect call was misrouted, rerouting to '{context.Request.Path}'");
+                context.Response.Redirect($"/ComfyBackendDirect{context.Request.Path}");
+                return;
+            }
+            else if (path.StartsWith("/assets/"))
+            {
+                Logs.Debug($"ComfyBackendDirect assets call was misrouted and improperly referrered, rerouting to '{context.Request.Path}'");
+                context.Response.Redirect($"/ComfyBackendDirect{context.Request.Path}");
+                return;
+            }
+            if (Program.ServerSettings.Network.EnableSpecialDevForwarding)
+            {
+                if (path.StartsWith("/node_modules/") || path.StartsWith("/@") || path.StartsWith("/src/"))
+                {
+                    Logs.Debug($"ComfyBackendDirect node frontend call was misrouted and improperly referrered, rerouting to '{context.Request.Path}'");
+                    context.Request.Path = $"/ComfyBackendDirect{context.Request.Path}";
+                }
+                else if ((path.EndsWith(".vue") || path.EndsWith(".ts")) && !path.StartsWith("/comfybackenddirect/"))
+                {
+                    Logs.Debug($"ComfyBackendDirect frontend related file ext call was misrouted and improperly referrered, rerouting to '{context.Request.Path}'");
+                    context.Request.Path = $"/ComfyBackendDirect{context.Request.Path}";
+                }
+                else if (context.Request.Headers.SecWebSocketProtocol.FirstOrDefault() == "vite-hmr")
+                {
+                    Logs.Debug($"ComfyBackendDirect frontend related Vite HMR call was misrouted and improperly referrered, forwarding to '{context.Request.Path}'");
+                    context.Request.Path = $"/ComfyBackendDirect{context.Request.Path}";
+                }
             }
             await next();
         });
@@ -142,7 +221,7 @@ public class WebServer
         WebApp.UseWebSockets(new WebSocketOptions() { KeepAliveInterval = TimeSpan.FromSeconds(30) });
         WebApp.MapRazorPages();
         timer.Check("[Web] core use calls");
-        WebApp.MapGet("/", () => Results.Redirect("/Text2Image"));
+        WebApp.MapGet("/", () => Results.Redirect("Text2Image"));
         WebApp.Map("/API/{*Call}", API.HandleAsyncRequest);
         WebApp.MapGet("/Output/{*Path}", ViewOutput);
         WebApp.MapGet("/View/{*Path}", ViewOutput);
@@ -182,7 +261,8 @@ public class WebServer
     {
         StringBuilder scripts = new(), stylesheets = new(), tabHeader = new(), tabFooter = new();
         ExtensionSharedFiles.Clear();
-        Program.RunOnAllExtensions(e =>
+        ExtensionAssets.Clear();
+        Program.Extensions.RunOnAllExtensions(e =>
         {
             foreach (string script in e.ScriptFiles)
             {
@@ -195,6 +275,12 @@ public class WebServer
                 string fname = $"/ExtensionFile/{e.ExtensionName}/{css}";
                 ExtensionSharedFiles.Add(fname, File.ReadAllText($"{e.FilePath}{css}"));
                 stylesheets.Append($"<link rel=\"stylesheet\" href=\"{fname}?vary={Utilities.VaryID}\" />");
+            }
+            foreach (string file in e.OtherAssets)
+            {
+                string fname = $"/ExtensionFile/{e.ExtensionName}/{file}";
+                string toRead = $"{e.FilePath}{file}";
+                ExtensionAssets.Add(fname, new(() => File.ReadAllBytes(toRead)));
             }
             if (Directory.Exists($"{e.FilePath}/Tabs/Text2Image/"))
             {
@@ -224,7 +310,7 @@ public class WebServer
         }
         catch (Exception ex)
         {
-            Logs.Error($"Error starting webserver: {ex}");
+            Logs.Error($"Error starting webserver: {ex.ReadableString()}");
             if (canRetry && ex is InvalidOperationException && ex.Message.StartsWith("A path base can only be configured"))
             {
                 Logs.Error("\n\n");
@@ -289,6 +375,12 @@ public class WebServer
             context.Response.StatusCode = 200;
             await context.Response.WriteAsync(script);
         }
+        else if (ExtensionAssets.TryGetValue(context.Request.Path.Value, out Lazy<byte[]> data))
+        {
+            context.Response.ContentType = Utilities.GuessContentType(context.Request.Path.Value);
+            context.Response.StatusCode = 200;
+            await context.Response.Body.WriteAsync(data.Value);
+        }
         else
         {
             context.Response.StatusCode = 404;
@@ -333,12 +425,12 @@ public class WebServer
         {
             if (ex is FileNotFoundException || ex is DirectoryNotFoundException || ex is PathTooLongException)
             {
-                Logs.Verbose($"File-not-found error reading output file '{path}': {ex}");
+                Logs.Verbose($"File-not-found error reading output file '{path}': {ex.ReadableString()}");
                 await context.YieldJsonOutput(null, 404, Utilities.ErrorObj("404, file not found.", "file_not_found"));
             }
             else
             {
-                Logs.Error($"Failed to read output file '{path}': {ex}");
+                Logs.Error($"Failed to read output file '{path}': {ex.ReadableString()}");
                 await context.YieldJsonOutput(null, 500, Utilities.ErrorObj("Error reading file. If you are the server owner, check program console log.", "file_error"));
             }
             return;

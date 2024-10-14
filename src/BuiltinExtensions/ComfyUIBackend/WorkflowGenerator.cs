@@ -430,7 +430,8 @@ public class WorkflowGenerator
         {
             return CreateNode("SwarmSaveImageWS", new JObject()
             {
-                ["images"] = image
+                ["images"] = image,
+                ["bit_depth"] = UserInput.Get(T2IParamTypes.BitDepth, "8bit")
             }, id);
         }
         else
@@ -446,15 +447,59 @@ public class WorkflowGenerator
     /// <summary>Creates a model loader and adapts it with any registered model adapters, and returns (Model, Clip, VAE).</summary>
     public (T2IModel, JArray, JArray, JArray) CreateStandardModelLoader(T2IModel model, string type, string id = null, bool noCascadeFix = false)
     {
+        string helper = $"modelloader_{model.Name}_{type}";
+        if (NodeHelpers.TryGetValue(helper, out string alreadyLoaded))
+        {
+            string[] parts = alreadyLoaded.SplitFast(':');
+            LoadingModel = [parts[0], int.Parse(parts[1])];
+            LoadingClip = parts[2].Length == 0 ? null : [parts[2], int.Parse(parts[3])];
+            LoadingVAE = parts[4].Length == 0 ? null : [parts[4], int.Parse(parts[5])];
+            return (model, LoadingModel, LoadingClip, LoadingVAE);
+        }
         void requireClipModel(string name, string url)
         {
             if (ClipModelsValid.Contains(name))
             {
                 return;
             }
-            string filePath = Utilities.CombinePathWithAbsolute(Program.ServerSettings.Paths.ModelRoot, "clip", name);
+            string filePath = Utilities.CombinePathWithAbsolute(Program.ServerSettings.Paths.ActualModelRoot, Program.ServerSettings.Paths.SDClipFolder, name);
             DownloadModel(name, filePath, url);
             ClipModelsValid.Add(name);
+        }
+        string getT5XXLModel()
+        {
+            if (UserInput.TryGet(ComfyUIBackendExtension.T5XXLModel, out string model))
+            {
+                return model;
+            }
+            requireClipModel("t5xxl_enconly.safetensors", "https://huggingface.co/mcmonkey/google_t5-v1_1-xxl_encoderonly/resolve/main/t5xxl_fp8_e4m3fn.safetensors");
+            return "t5xxl_enconly.safetensors";
+        }
+        string getClipLModel()
+        {
+            if (UserInput.TryGet(ComfyUIBackendExtension.ClipLModel, out string model))
+            {
+                return model;
+            }
+            if (ComfyUIBackendExtension.ClipModels.Contains("clip_l_sdxl_base.safetensors"))
+            {
+                return "clip_l_sdxl_base.safetensors";
+            }
+            requireClipModel("clip_l.safetensors", "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/text_encoder/model.fp16.safetensors");
+            return "clip_l.safetensors";
+        }
+        string getClipGModel()
+        {
+            if (UserInput.TryGet(ComfyUIBackendExtension.ClipGModel, out string model))
+            {
+                return model;
+            }
+            if (ComfyUIBackendExtension.ClipModels.Contains("clip_g_sdxl_base.safetensors"))
+            {
+                return "clip_g_sdxl_base.safetensors";
+            }
+            requireClipModel("clip_g.safetensors", "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/text_encoder_2/model.fp16.safetensors");
+            return "clip_g.safetensors";
         }
         IsDifferentialDiffusion = false;
         LoadingModelType = type;
@@ -499,10 +544,9 @@ public class WorkflowGenerator
                 ["model"] = model.ModelClass.ID == "pixart-ms-sigma-xl-2-2k" ? "PixArtMS_Sigma_XL_2_2K" : "PixArtMS_Sigma_XL_2"
             }, id);
             LoadingModel = [pixartNode, 0];
-            requireClipModel("t5xxl_enconly.safetensors", "https://huggingface.co/mcmonkey/google_t5-v1_1-xxl_encoderonly/resolve/main/t5xxl_fp8_e4m3fn.safetensors");
             string singleClipLoader = CreateNode("CLIPLoader", new JObject()
             {
-                ["clip_name"] = "t5xxl_enconly.safetensors",
+                ["clip_name"] = getT5XXLModel(),
                 ["type"] = "sd3"
             });
             LoadingClip = [singleClipLoader, 0];
@@ -521,17 +565,46 @@ public class WorkflowGenerator
             });
             LoadingVAE = [vaeLoader, 0];
         }
-        else if (model.OriginatingFolderPath.Replace('\\', '/').EndsWith("/unet")) // Hacky but it works for now
+        else if (model.OriginatingFolderPath.Replace('\\', '/').EndsWith("/unet") || model.OriginatingFolderPath.Replace('\\', '/').EndsWith("/diffusion_models")) // Hacky but it works for now
         {
-            string dtype = UserInput.Get(ComfyUIBackendExtension.PreferredDType, "automatic");
-            string modelNode = CreateNode("UNETLoader", new JObject()
+            if (model.Metadata?.SpecialFormat == "gguf")
             {
-                ["unet_name"] = model.ToString(ModelFolderFormat),
-                ["weight_dtype"] = dtype == "automatic" ? (IsFlux() ? "fp8_e4m3fn" : "default") : dtype
-            }, id);
-            LoadingModel = [modelNode, 0];
+                if (!Features.Contains("gguf"))
+                {
+                    throw new SwarmUserErrorException("This model is in GGUF format, but the server does not have GGUF support installed. Cannot run.");
+                }
+                string modelNode = CreateNode("UnetLoaderGGUF", new JObject()
+                {
+                    ["unet_name"] = model.ToString(ModelFolderFormat)
+                }, id);
+                LoadingModel = [modelNode, 0];
+            }
+            else
+            {
+                string dtype = UserInput.Get(ComfyUIBackendExtension.PreferredDType, "automatic");
+                string modelNode = CreateNode("UNETLoader", new JObject()
+                {
+                    ["unet_name"] = model.ToString(ModelFolderFormat),
+                    ["weight_dtype"] = dtype == "automatic" ? (IsFlux() ? "fp8_e4m3fn" : "default") : dtype
+                }, id);
+                LoadingModel = [modelNode, 0];
+            }
             LoadingClip = null;
             LoadingVAE = null;
+        }
+        else if (model.Metadata?.SpecialFormat == "bnb_nf4")
+        {
+            if (!Features.Contains("bnb_nf4"))
+            {
+                throw new SwarmUserErrorException("This model is in BitsAndBytes-NF4 format, but the server does not have BNB_NF4 support installed. Cannot run.");
+            }
+            string modelNode = CreateNode("CheckpointLoaderNF4", new JObject()
+            {
+                ["ckpt_name"] = model.ToString(ModelFolderFormat)
+            }, id);
+            LoadingModel = [modelNode, 0];
+            LoadingClip = [modelNode, 1];
+            LoadingVAE = [modelNode, 2];
         }
         else
         {
@@ -569,17 +642,16 @@ public class WorkflowGenerator
             if (mode == "CLIP + T5" && tencs.Contains("clip_l") && tencs.Contains("t5xxl")) { mode = null; }
             if (mode is not null)
             {
-                requireClipModel("clip_g_sdxl_base.safetensors", "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/text_encoder_2/model.fp16.safetensors");
-                requireClipModel("clip_l_sdxl_base.safetensors", "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/text_encoder/model.fp16.safetensors");
-                if (mode.Contains("T5"))
-                {
-                    requireClipModel("t5xxl_enconly.safetensors", "https://huggingface.co/mcmonkey/google_t5-v1_1-xxl_encoderonly/resolve/main/t5xxl_fp8_e4m3fn.safetensors");
-                }
                 if (mode == "T5 Only")
                 {
-                    string singleClipLoader = CreateNode("CLIPLoader", new JObject()
+                    string loaderType = "CLIPLoader";
+                    if (getT5XXLModel().EndsWith(".gguf"))
                     {
-                        ["clip_name"] = "t5xxl_enconly.safetensors",
+                        loaderType = "CLIPLoaderGGUF";
+                    }
+                    string singleClipLoader = CreateNode(loaderType, new JObject()
+                    {
+                        ["clip_name"] = getT5XXLModel(),
                         ["type"] = "sd3"
                     });
                     LoadingClip = [singleClipLoader, 0];
@@ -588,19 +660,24 @@ public class WorkflowGenerator
                 {
                     string dualClipLoader = CreateNode("DualCLIPLoader", new JObject()
                     {
-                        ["clip_name1"] = "clip_g_sdxl_base.safetensors",
-                        ["clip_name2"] = "clip_l_sdxl_base.safetensors",
+                        ["clip_name1"] = getClipGModel(),
+                        ["clip_name2"] = getClipLModel(),
                         ["type"] = "sd3"
                     });
                     LoadingClip = [dualClipLoader, 0];
                 }
                 else
                 {
-                    string tripleClipLoader = CreateNode("TripleCLIPLoader", new JObject()
+                    string loaderType = "TripleCLIPLoader";
+                    if (getT5XXLModel().EndsWith(".gguf"))
                     {
-                        ["clip_name1"] = "clip_g_sdxl_base.safetensors",
-                        ["clip_name2"] = "clip_l_sdxl_base.safetensors",
-                        ["clip_name3"] = "t5xxl_enconly.safetensors"
+                        loaderType = "TripleCLIPLoaderGGUF";
+                    }
+                    string tripleClipLoader = CreateNode(loaderType, new JObject()
+                    {
+                        ["clip_name1"] = getClipGModel(),
+                        ["clip_name2"] = getClipLModel(),
+                        ["clip_name3"] = getT5XXLModel()
                     });
                     LoadingClip = [tripleClipLoader, 0];
                 }
@@ -608,12 +685,15 @@ public class WorkflowGenerator
         }
         else if (IsFlux() && (LoadingClip is null || LoadingVAE is null))
         {
-            requireClipModel("clip_l_sdxl_base.safetensors", "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/text_encoder/model.fp16.safetensors");
-            requireClipModel("t5xxl_enconly.safetensors", "https://huggingface.co/mcmonkey/google_t5-v1_1-xxl_encoderonly/resolve/main/t5xxl_fp8_e4m3fn.safetensors");
-            string dualClipLoader = CreateNode("DualCLIPLoader", new JObject()
+            string loaderType = "DualCLIPLoader";
+            if (getT5XXLModel().EndsWith(".gguf"))
             {
-                ["clip_name1"] = "t5xxl_enconly.safetensors",
-                ["clip_name2"] = "clip_l_sdxl_base.safetensors",
+                loaderType = "DualCLIPLoaderGGUF";
+            }
+            string dualClipLoader = CreateNode(loaderType, new JObject()
+            {
+                ["clip_name1"] = getT5XXLModel(),
+                ["clip_name2"] = getClipLModel(),
                 ["type"] = "flux"
             });
             LoadingClip = [dualClipLoader, 0];
@@ -667,6 +747,11 @@ public class WorkflowGenerator
         {
             step.Action(this);
         }
+        if (LoadingClip is null)
+        {
+            throw new SwarmUserErrorException($"Model loader for {model.Name} didn't work - are you sure it has an architecture ID set properly?");
+        }
+        NodeHelpers[helper] = $"{LoadingModel[0]}:{LoadingModel[1]}" + (LoadingClip is null ? "::" : $":{LoadingClip[0]}:{LoadingClip[1]}") + (LoadingVAE is null ? "::" : $":{LoadingVAE[0]}:{LoadingVAE[1]}");
         return (model, LoadingModel, LoadingClip, LoadingVAE);
     }
 
@@ -699,7 +784,7 @@ public class WorkflowGenerator
     public string DefaultPreviews = "default";
 
     /// <summary>Creates a KSampler and returns its node ID.</summary>
-    public string CreateKSampler(JArray model, JArray pos, JArray neg, JArray latent, double cfg, int steps, int startStep, int endStep, long seed, bool returnWithLeftoverNoise, bool addNoise, double sigmin = -1, double sigmax = -1, string previews = null, string defsampler = null, string defscheduler = null, string id = null, bool rawSampler = false, bool doTiled = false)
+    public string CreateKSampler(JArray model, JArray pos, JArray neg, JArray latent, double cfg, int steps, int startStep, int endStep, long seed, bool returnWithLeftoverNoise, bool addNoise, double sigmin = -1, double sigmax = -1, string previews = null, string defsampler = null, string defscheduler = null, string id = null, bool rawSampler = false, bool doTiled = false, bool isFirstSampler = false)
     {
         bool willCascadeFix = false;
         JArray cascadeModel = null;
@@ -709,6 +794,11 @@ public class WorkflowGenerator
             willCascadeFix = true;
             defsampler ??= "euler_ancestral";
             defscheduler ??= "simple";
+            if (!isFirstSampler)
+            {
+                willCascadeFix = false;
+                model = cascadeModel;
+            }
         }
         if (IsFlux())
         {
@@ -829,6 +919,10 @@ public class WorkflowGenerator
             ["return_with_leftover_noise"] = returnWithLeftoverNoise ? "enable" : "disable",
             ["add_noise"] = addNoise ? "enable" : "disable"
         };
+        if (UserInput.RawOriginalSeed.HasValue && UserInput.RawOriginalSeed >= 0)
+        {
+            inputs["control_after_generate"] = "fixed";
+        }
         string created;
         if (Features.Contains("variation_seed") && !RestrictCustomNodes)
         {
