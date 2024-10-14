@@ -1850,18 +1850,22 @@ function setTitles() {
 }
 setTitles();
 
-function doFeatureInstaller(path, author, name, button_div_id, alt_confirm = null, callback = null, deleteButton = true) {
-    if (!confirm(alt_confirm || `This will install ${path} which is a third-party extension maintained by community developer '${author}'.\nWe cannot make any guarantees about it.\nDo you wish to install?`)) {
+function doFeatureInstaller(name, button_div_id, alt_confirm, callback = null, deleteButton = true) {
+    if (!confirm(alt_confirm)) {
         return;
     }
-    let buttonDiv = getRequiredElementById(button_div_id);
-    buttonDiv.querySelector('button').disabled = true;
-    buttonDiv.appendChild(createDiv('', null, 'Installing...'));
-    genericRequest('ComfyInstallFeatures', {'feature': name}, data => {
-        buttonDiv.appendChild(createDiv('', null, "Installed! Please wait while backends restart. If it doesn't work, you may need to restart Swarm."));
+    let buttonDiv = document.getElementById(button_div_id);
+    if (buttonDiv) {
+        buttonDiv.querySelector('button').disabled = true;
+        buttonDiv.appendChild(createDiv('', null, 'Installing...'));
+    }
+    genericRequest('ComfyInstallFeatures', {'features': name}, data => {
+        if (buttonDiv) {
+            buttonDiv.appendChild(createDiv('', null, "Installed! Please wait while backends restart. If it doesn't work, you may need to restart Swarm."));
+        }
         reviseStatusBar();
         setTimeout(() => {
-            if (deleteButton) {
+            if (deleteButton && buttonDiv) {
                 buttonDiv.remove();
             }
             hasAppliedFirstRun = false;
@@ -1872,46 +1876,35 @@ function doFeatureInstaller(path, author, name, button_div_id, alt_confirm = nul
         }, 8000);
     }, 0, (e) => {
         showError(e);
-        buttonDiv.appendChild(createDiv('', null, 'Failed to install!'));
-        buttonDiv.querySelector('button').disabled = false;
+        if (buttonDiv) {
+            buttonDiv.appendChild(createDiv('', null, 'Failed to install!'));
+            buttonDiv.querySelector('button').disabled = false;
+        }
     });
 }
 
-function revisionInstallIPAdapter() {
-    doFeatureInstaller('https://github.com/cubiq/ComfyUI_IPAdapter_plus', 'cubiq', 'ipadapter', 'revision_install_ipadapter');
-}
-
-function installControlnetPreprocessors() {
-    doFeatureInstaller('https://github.com/Fannovel16/comfyui_controlnet_aux', 'Fannovel16', 'controlnet_preprocessors', 'controlnet_install_preprocessors');
-}
-
-function installVideoRife() {
-    doFeatureInstaller('https://github.com/Fannovel16/ComfyUI-Frame-Interpolation', 'Fannovel16', 'frame_interpolation', 'video_install_frameinterps');
+function installFeatureById(ids, buttonId = null, modalId = null) {
+    let notice = '';
+    for (let id of ids.split(',')) {
+        let feature = comfy_features[id];
+        if (!feature) {
+            console.error(`Feature ID ${id} not found in comfy_features, can't install`);
+            return;
+        }
+        notice += feature.notice + '\n';
+    }
+    doFeatureInstaller(ids, buttonId, notice.trim(), () => {
+        if (modalId) {
+            $(`#${modalId}`).modal('hide');
+        }
+    });
 }
 
 function installTensorRT() {
-    doFeatureInstaller('https://github.com/comfyanonymous/ComfyUI_TensorRT', 'comfyanonymous + NVIDIA', 'comfyui_tensorrt', 'install_trt_button', `This will install TensorRT support developed by Comfy and NVIDIA.\nDo you wish to install?`, () => {
+    doFeatureInstaller('comfyui_tensorrt', 'install_trt_button', `This will install TensorRT support developed by Comfy and NVIDIA.\nDo you wish to install?`, () => {
         getRequiredElementById('tensorrt_mustinstall').style.display = 'none';
         getRequiredElementById('tensorrt_modal_ready').style.display = '';
     });
-}
-
-function installSAM2() {
-    doFeatureInstaller('https://github.com/kijai/ComfyUI-segment-anything-2', 'kijai', 'sam2', 'install_sam2_button', null, () => {
-        $('#sam2_installer').modal('hide');
-    }, false);
-}
-
-function installBNBNF4() {
-    doFeatureInstaller('https://github.com/comfyanonymous/ComfyUI_bitsandbytes_NF4', 'comfyanonymous', 'bnb_nf4', 'install_bnbnf4_button', `This will install BnB NF4 support developed by Comfy and lllyasviel (AGPL License).\nDo you wish to install?`, () => {
-        $('#bnb_nf4_installer').modal('hide');
-    }, false);
-}
-
-function installGGUF() {
-    doFeatureInstaller('https://github.com/city96/ComfyUI-GGUF', 'city96', 'gguf', 'install_gguf_button', `This will install GGUF support developed by city96.\nDo you wish to install?`, () => {
-        $('#gguf_installer').modal('hide');
-    }, false);
 }
 
 function hideRevisionInputs() {
