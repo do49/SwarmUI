@@ -1,0 +1,23 @@
+image: atlassian/default-image:3
+
+pipelines:
+  default:
+    - step:
+        name: Test and Build
+        services:
+          - docker
+        runs-on: 
+          - 'self.hosted'
+          - 'linux'
+        script:
+          - make image
+          - make push
+    - step:
+        manual: true
+        name: Deploy
+        runs-on: 
+          - 'self.hosted'
+          - 'linux'
+        deployment: production
+        script:
+          - make deploy
