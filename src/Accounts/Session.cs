@@ -57,6 +57,9 @@ public class Session : IEquatable<Session>
     /// <summary>Token to interrupt this session.</summary>
     public CancellationTokenSource SessInterrupt = new();
 
+    /// <summary>General purpose data store for this session.</summary>
+    public ConcurrentDictionary<string, object> SessionData = [];
+
     /// <summary>All current generation claims.</summary>
     public ConcurrentDictionary<long, GenClaim> Claims = [];
 

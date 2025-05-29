@@ -626,6 +626,91 @@ public class T2IPromptHandling
             return "";
         };
         PromptTagLengthEstimators["comment"] = estimateEmpty;
+        PromptTagProcessors["wildcardseq"] = (data, context) =>
+        {
+            // Prompt change detection logic
+            string lastPromptKey = "wildcardseq_last_full_prompt";
+            string currentActualPrompt = context.Input.Get(T2IParamTypes.Prompt) ?? "";
+            string currentActualNegativePrompt = context.Input.Get(T2IParamTypes.NegativePrompt) ?? "";
+            string currentFullPrompt = $"P:{currentActualPrompt}|N:{currentActualNegativePrompt}";
+            bool promptChanged = false;
+            if (context.Input.SourceSession.SessionData.TryGetValue(lastPromptKey, out object prevPromptObj) && prevPromptObj is string previousPrompt)
+            {
+                if (previousPrompt != currentFullPrompt)
+                {
+                    List<string> keysToRemove = context.Input.SourceSession.SessionData.Keys.Where(k => k.StartsWith("wildcardseq_index_")).ToList();
+                    if (keysToRemove.Any())
+                    {
+                        foreach (string key in keysToRemove)
+                        {
+                            context.Input.SourceSession.SessionData.Remove(key, out _);
+                        }
+                    }
+                    promptChanged = true;
+                }
+            }
+            else
+            {
+                promptChanged = true; // Treat as changed to store it for the first time
+            }
+            if (promptChanged)
+            {
+                context.Input.SourceSession.SessionData[lastPromptKey] = currentFullPrompt;
+            }
+
+            data = context.Parse(data);
+            string[] dataParts = data.SplitFast(',', 1);
+            data = dataParts[0];
+            HashSet<string> exclude = [];
+            if (dataParts.Length > 1 && dataParts[1].StartsWithFast("not="))
+            {
+                exclude.UnionWith(SplitSmart(dataParts[1].After('=')));
+            }
+            (int count, string partSeparator) = InterpretPredataForRandom("wildcardseq", context.PreData, data, context);
+            if (partSeparator is null)
+            {
+                return null;
+            }
+            string card = T2IParamTypes.GetBestInList(data, WildcardsHelper.ListFiles);
+            if (card is null)
+            {
+                context.TrackWarning($"Wildcardseq input '{data}' does not match any wildcard file and will be ignored.");
+                return null;
+            }
+            WildcardsHelper.Wildcard wildcard = WildcardsHelper.GetWildcard(card);
+            List<string> usedWildcards = context.Input.ExtraMeta.GetOrCreate("used_wildcards", () => new List<string>()) as List<string>;
+            usedWildcards.Add(card);
+            string[] options = wildcard.Options;
+            if (exclude.Count > 0)
+            {
+                options = [.. options.Except(exclude)];
+            }
+            if (options.Length == 0)
+            {
+                return "";
+            }
+            // Track index per wildcard name in SessionData
+            string sessionKey = $"wildcardseq_index_{card}";
+            int idx = 0;
+            if (context.Input.SourceSession.SessionData.TryGetValue(sessionKey, out object idxObj) && idxObj is int storedIdx)
+            {
+                idx = storedIdx;
+            }
+            string result = "";
+            for (int i = 0; i < count; i++)
+            {
+                int index = idx % options.Length;
+                string choice = options[index];
+                result += context.Parse(choice).Trim() + partSeparator;
+                idx++;
+            }
+            // Store updated index for next call in this session
+            context.Input.SourceSession.SessionData[sessionKey] = idx;
+            return result.Trim();
+        };
+        PromptTagProcessors["wcs"] = PromptTagProcessors["wildcardseq"];
+        PromptTagLengthEstimators["wildcardseq"] = estimateEmpty;
+        PromptTagLengthEstimators["wcs"] = estimateEmpty;
     }
 
     /// <summary>Special utility to process prompt inputs before the request is executed (to parse wildcards, embeddings, etc).</summary>

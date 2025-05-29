@@ -37,6 +37,24 @@ class PromptTabCompleteClass {
             return this.getOrderedMatches(dataHolder.data, searchWord).map(p => `\t${p}`);
         });
         this.registerAltPrefix('wc', 'wildcard');
+        this.registerPrefix('wildcardseq', 'Select lines sequentially from a wildcard file (presaved list of options)', (prefix) => {
+            let prefixLow = prefix.toLowerCase();
+            let colonInd = prefixLow.indexOf(':');
+            if (colonInd == -1) {
+                return this.getOrderedMatches(wildcardHelpers.allWildcards, prefixLow);
+            }
+            let wcName = prefixLow.substring(0, colonInd);
+            if (!wildcardHelpers.allWildcards.includes(wcName)) {
+                return ['\\nWildcard not found'];
+            }
+            let dataHolder = wildcardHelpers.getWildcardDataFor(wcName);
+            if (!dataHolder.isComplete) {
+                return ['\\n<AUTO-RETRY>'];
+            }
+            let searchWord = prefixLow.substring(colonInd + 1);
+            return this.getOrderedMatches(dataHolder.data, searchWord).map(p => `\\t${p}`);
+        });
+        this.registerAltPrefix('wcs', 'wildcardseq');
         this.registerPrefix('wildcard[2-4]', 'Select multiple random lines from a wildcard file (presaved list of options) (works same as "random" but for wildcards)', (prefix) => {
             let prefixLow = prefix.toLowerCase();
             return this.getOrderedMatches(wildcardHelpers.allWildcards, prefixLow);
