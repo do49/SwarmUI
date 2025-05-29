@@ -1,3 +1,4 @@
+
 /** Handler for tab-completes in prompt boxes. */
 class PromptTabCompleteClass {
     constructor() {
@@ -22,12 +23,15 @@ class PromptTabCompleteClass {
                 return this.getOrderedMatches(wildcardHelpers.allWildcards, prefixLow);
             }
             let wcName = prefixLow.substring(0, colonInd);
-            if (!wildcardHelpers.allWildcards.includes(wcName)) {
+            if (!(wcName in wildcardHelpers.wildcardNameCheck)) {
                 return ['\nWildcard not found'];
             }
             let dataHolder = wildcardHelpers.getWildcardDataFor(wcName);
             if (!dataHolder.isComplete) {
                 return ['\n<AUTO-RETRY>'];
+            }
+            if (!dataHolder.data) {
+                return ['\nWildcard not found'];
             }
             let searchWord = prefixLow.substring(colonInd + 1);
             return this.getOrderedMatches(dataHolder.data, searchWord).map(p => `\t${p}`);
@@ -37,24 +41,6 @@ class PromptTabCompleteClass {
             let prefixLow = prefix.toLowerCase();
             return this.getOrderedMatches(wildcardHelpers.allWildcards, prefixLow);
         });
-        this.registerPrefix('wildcardseq', 'Select lines sequentially from a wildcard file (presaved list of options)', (prefix) => {
-            let prefixLow = prefix.toLowerCase();
-            let colonInd = prefixLow.indexOf(':');
-            if (colonInd == -1) {
-                return this.getOrderedMatches(wildcardHelpers.allWildcards, prefixLow);
-            }
-            let wcName = prefixLow.substring(0, colonInd);
-            if (!wildcardHelpers.allWildcards.includes(wcName)) {
-                return ['\\nWildcard not found'];
-            }
-            let dataHolder = wildcardHelpers.getWildcardDataFor(wcName);
-            if (!dataHolder.isComplete) {
-                return ['\\n<AUTO-RETRY>'];
-            }
-            let searchWord = prefixLow.substring(colonInd + 1);
-            return this.getOrderedMatches(dataHolder.data, searchWord).map(p => `\\t${p}`);
-        });
-        this.registerAltPrefix('wcs', 'wildcardseq');
         this.registerPrefix('repeat[3]', 'Repeat a value several times', (prefix) => {
             return ['\nUse for example like "<repeat[3]:very> big" to get "very very very big",', '\nor "<repeat[1-3]:very>" to get randomly between 1 to 3 "very"s,', '\nor <repeat[3]:<random:cat,dog>>" to get "cat" or "dog" 3 times in a row eg "cat dog cat".'];
         });
