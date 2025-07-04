@@ -962,6 +962,23 @@ public class BackendHandler
                 .OrderBy(g => g.First().Index) // Maintain order of first appearance
                 .ToList();
             
+            // Calculate average generations per model
+            double avgGenerationsPerModel = modelGroups.Count > 0 ? (double)allRequests.Length / modelGroups.Count : 0;
+            int totalModels = modelGroups.Count;
+            
+            // Only use model grouping when generations per model <= total models
+            // Otherwise, fall back to round-robin distribution to avoid backend imbalance
+            if (avgGenerationsPerModel > totalModels)
+            {
+                // Use original round-robin distribution
+                int roundRobinIndex = requestIndex % available.Count;
+                T2IBackendData roundRobinBackend = available[roundRobinIndex];
+                
+                Logs.Verbose($"[BackendHandler] Request #{ID} at queue position {requestIndex} assigned to backend #{roundRobinBackend.ID} using round-robin (avg generations per model: {avgGenerationsPerModel:F1} > {totalModels} models)");
+                
+                return roundRobinBackend;
+            }
+            
             // Find which model group this request belongs to
             string currentModelName = Model?.Name ?? "(none)";
             int modelGroupIndex = modelGroups.FindIndex(g => g.Key == currentModelName);
@@ -976,7 +993,7 @@ public class BackendHandler
             int backendIndex = modelGroupIndex % available.Count;
             T2IBackendData selectedBackend = available[backendIndex];
             
-            Logs.Verbose($"[BackendHandler] Request #{ID} for model '{currentModelName}' (group {modelGroupIndex}) assigned to backend #{selectedBackend.ID} (backend index {backendIndex})");
+            Logs.Verbose($"[BackendHandler] Request #{ID} for model '{currentModelName}' (group {modelGroupIndex}) assigned to backend #{selectedBackend.ID} using model grouping (avg generations per model: {avgGenerationsPerModel:F1} <= {totalModels} models)");
             
             return selectedBackend;
         }
