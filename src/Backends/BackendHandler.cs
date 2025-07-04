@@ -953,13 +953,30 @@ public class BackendHandler
                 return available.FirstOrDefault();
             }
             
-            // Assign backends starting at different offsets to distribute work efficiently
-            // This will tend to group same-model work on individual backends since the grid generator
-            // already orders requests by model weight
-            int backendIndex = requestIndex % available.Count;
+            // Group requests by model and assign each model group to a different backend
+            // This ensures all requests for the same model are processed by the same backend,
+            // minimizing model load/unload operations
+            var modelGroups = allRequests
+                .Select((req, idx) => new { Request = req, Index = idx, ModelName = req.Model?.Name ?? "(none)" })
+                .GroupBy(x => x.ModelName)
+                .OrderBy(g => g.First().Index) // Maintain order of first appearance
+                .ToList();
+            
+            // Find which model group this request belongs to
+            string currentModelName = Model?.Name ?? "(none)";
+            int modelGroupIndex = modelGroups.FindIndex(g => g.Key == currentModelName);
+            
+            if (modelGroupIndex == -1)
+            {
+                // Fallback to first available backend if model group not found
+                return available.FirstOrDefault();
+            }
+            
+            // Assign backend based on model group, ensuring even distribution
+            int backendIndex = modelGroupIndex % available.Count;
             T2IBackendData selectedBackend = available[backendIndex];
             
-            Logs.Verbose($"[BackendHandler] Request #{ID} at queue position {requestIndex} assigned to backend #{selectedBackend.ID} (offset {backendIndex})");
+            Logs.Verbose($"[BackendHandler] Request #{ID} for model '{currentModelName}' (group {modelGroupIndex}) assigned to backend #{selectedBackend.ID} (backend index {backendIndex})");
             
             return selectedBackend;
         }
