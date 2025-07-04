@@ -1149,6 +1149,10 @@ public class BackendHandler
                 T2IBackendRequest[] allRequests = T2IBackendRequests.Values.ToArray();
                 
                 // Process requests with offset distribution for different backends
+                // This distributes work more efficiently across multiple backends by giving each backend
+                // a different starting offset in the request queue. This works particularly well with
+                // grid generation since the grid generator already orders requests by model weight,
+                // leading to natural grouping of same-model work on individual backends.
                 foreach (T2IBackendRequest request in allRequests)
                 {
                     if (request.Cancel.IsCancellationRequested)
