@@ -257,6 +257,9 @@ public class BackendHandler
 
         public BackendType BackType;
 
+        /// <summary>Offset used for queue processing to distribute work across backends efficiently.</summary>
+        public volatile int QueueOffset = 0;
+
         public void UpdateLastReleaseTime()
         {
             TimeLastRelease = Environment.TickCount64;
@@ -854,6 +857,113 @@ public class BackendHandler
             ReleasePressure(false);
         }
 
+        public void TryFindWithOffset(T2IBackendRequest[] allRequests)
+        {
+            List<T2IBackendData> currentBackends = [.. Handler.T2IBackends.Values];
+            List<T2IBackendData> possible = [.. currentBackends.Where(b => b.Backend.IsEnabled && !b.Backend.ShutDownReserve && b.Backend.Reservations == 0 && b.Backend.Status == BackendStatus.RUNNING)];
+            Logs.Verbose($"[BackendHandler] Backend request #{ID} searching for backend... have {possible.Count}/{currentBackends.Count} possible");
+            if (!possible.Any())
+            {
+                if (!currentBackends.Any(b => b.Backend.Status == BackendStatus.LOADING || b.Backend.Status == BackendStatus.WAITING))
+                {
+                    Logs.Verbose($"[BackendHandler] count notEnabled = {currentBackends.Count(b => !b.Backend.IsEnabled)}, shutDownReserve = {currentBackends.Count(b => b.Backend.ShutDownReserve)}, directReserved = {currentBackends.Count(b => b.Backend.Reservations > 0)}, statusNotRunning = {currentBackends.Count(b => b.Backend.Status != BackendStatus.RUNNING)}");
+                    Logs.Warning("[BackendHandler] No backends are available! Cannot generate anything.");
+                    Failure = new SwarmUserErrorException("No backends available!");
+                }
+                return;
+            }
+            possible = Filter is null ? possible : [.. possible.Where(Filter)];
+            if (!possible.Any())
+            {
+                string reason = "";
+                if (UserInput is not null && UserInput.RefusalReasons.Any())
+                {
+                    reason = $" Backends refused for the following reason(s):\n{UserInput.RefusalReasons.Select(r => $"- {r}").JoinString("\n")}";
+                }
+                Logs.Warning($"[BackendHandler] No backends match the request! Cannot generate anything.{reason}");
+                Failure = new SwarmUserErrorException($"No backends match the settings of the request given!{reason}");
+                return;
+            }
+            List<T2IBackendData> available = [.. possible.Where(b => !b.CheckIsInUse).OrderBy(b => b.Usages)];
+            if (Logs.MinimumLevel <= Logs.LogLevel.Verbose)
+            {
+                Logs.Verbose($"Possible: {possible.Select(b => $"{b.ID}/{b.BackType.Name}").JoinString(", ")}, available {available.Select(b => $"{b.ID}/{b.BackType.Name}").JoinString(", ")}");
+            }
+            
+            T2IBackendData selectedBackend = SelectBackendWithOffset(available, allRequests);
+            if (Model is null && selectedBackend is not null)
+            {
+                Logs.Debug($"[BackendHandler] Backend request #{ID} will claim #{selectedBackend.ID}");
+                Result = new T2IBackendAccess(selectedBackend);
+                return;
+            }
+            if (Model is not null)
+            {
+                List<T2IBackendData> correctModel = [.. available.Where(b => b.Backend.CurrentModelName == Model.Name)];
+                if (correctModel.Any())
+                {
+                    T2IBackendData backend = correctModel.FirstOrDefault();
+                    Logs.Debug($"[BackendHandler] Backend request #{ID} found correct model on #{backend.ID}");
+                    Result = new T2IBackendAccess(backend);
+                    return;
+                }
+            }
+            if (Pressure is null && Model is not null)
+            {
+                Logs.Verbose($"[BackendHandler] Backend request #{ID} is creating pressure for model {Model.Name}...");
+                Pressure = Handler.ModelRequests.GetOrCreate(Model.Name, () => new() { Model = Model });
+                lock (Pressure.Locker)
+                {
+                    Pressure.Count++;
+                    if (Session is not null)
+                    {
+                        Pressure.Sessions.Add(Session);
+                    }
+                    Pressure.Requests.Add(this);
+                }
+            }
+            if (available.Any())
+            {
+                Handler.LoadHighestPressureNow(possible, available, () => ReleasePressure(true), Pressure, Cancel);
+            }
+            if (Pressure is not null && Pressure.IsLoading && NotifyWillLoad is not null)
+            {
+                NotifyWillLoad();
+                NotifyWillLoad = null;
+            }
+        }
+
+        private T2IBackendData SelectBackendWithOffset(List<T2IBackendData> available, T2IBackendRequest[] allRequests)
+        {
+            if (!available.Any())
+            {
+                return null;
+            }
+            
+            // If only one backend available, use it directly
+            if (available.Count == 1)
+            {
+                return available[0];
+            }
+            
+            // Find this request's position in the queue
+            int requestIndex = Array.IndexOf(allRequests, this);
+            if (requestIndex == -1)
+            {
+                return available.FirstOrDefault();
+            }
+            
+            // Assign backends starting at different offsets to distribute work efficiently
+            // This will tend to group same-model work on individual backends since the grid generator
+            // already orders requests by model weight
+            int backendIndex = requestIndex % available.Count;
+            T2IBackendData selectedBackend = available[backendIndex];
+            
+            Logs.Verbose($"[BackendHandler] Request #{ID} at queue position {requestIndex} assigned to backend #{selectedBackend.ID} (offset {backendIndex})");
+            
+            return selectedBackend;
+        }
+
         public void TryFind()
         {
             List<T2IBackendData> currentBackends = [.. Handler.T2IBackends.Values];
@@ -1036,7 +1146,10 @@ public class BackendHandler
             {
                 bool anyMoved = false;
                 mark("Start");
-                foreach (T2IBackendRequest request in T2IBackendRequests.Values.ToArray())
+                T2IBackendRequest[] allRequests = T2IBackendRequests.Values.ToArray();
+                
+                // Process requests with offset distribution for different backends
+                foreach (T2IBackendRequest request in allRequests)
                 {
                     if (request.Cancel.IsCancellationRequested)
                     {
@@ -1052,7 +1165,7 @@ public class BackendHandler
                     }
                     try
                     {
-                        request.TryFind();
+                        request.TryFindWithOffset(allRequests);
                     }
                     catch (Exception ex)
                     {
