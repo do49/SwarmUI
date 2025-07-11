@@ -102,7 +102,11 @@ class GenTabLayout {
     /** Position of the bottom section bar. -1 if unset. */
     bottomSectionBarPos = parseInt(getCookie('barspot_pageBarMidPx') || '-1');
 
+    /** Tabs to hide. */
     hideTabs = (getCookie('layout_hidetabs') || '').split(',');
+
+    /** Layout to use as mobile/desktop/auto. */
+    mobileDesktopLayout = localStorage.getItem('layout_mobileDesktop') || 'auto';
 
     constructor() {
         this.leftSplitBar = getRequiredElementById('t2i-top-split-bar');
@@ -136,7 +140,7 @@ class GenTabLayout {
         this.rightBarDrag = false;
         this.bottomBarDrag = false;
         this.imageEditorSizeBarDrag = false;
-        this.isSmallWindow = window.innerWidth < 768;
+        this.isSmallWindow = this.mobileDesktopLayout == 'auto' ? window.innerWidth < 768 : this.mobileDesktopLayout == 'mobile';
         this.antiDup = false;
         this.swipeStartX = -1;
         this.swipeStartY = -1;
@@ -191,7 +195,7 @@ class GenTabLayout {
     
     /** Does the full position update logic. */
     reapplyPositions() {
-        this.isSmallWindow = window.innerWidth < 768;
+        this.isSmallWindow = this.mobileDesktopLayout == 'auto' ? window.innerWidth < 768 : this.mobileDesktopLayout == 'mobile';
         if (this.isSmallWindow) {
             document.body.classList.add('small-window');
             document.body.classList.remove('large-window');
@@ -265,9 +269,6 @@ class GenTabLayout {
             this.inputSidebar.style.height = `calc(100vh - ${fixed})`;
             this.mainImageArea.style.height = `calc(100vh - ${fixed})`;
             this.currentImageWrapbox.style.height = `calc(100vh - ${fixed} - ${altHeight})`;
-            if (imageEditor) {
-                imageEditor.inputDiv.style.height = `calc(100vh - ${fixed} - ${altHeight})`;
-            }
             this.editorSizebar.style.height = `calc(100vh - ${fixed} - ${altHeight})`;
             this.currentImageBatch.style.height = `calc(100vh - ${fixed})`;
             this.topSection.style.height = `calc(100vh - ${fixed})`;
@@ -279,9 +280,6 @@ class GenTabLayout {
             this.inputSidebar.style.height = '';
             this.mainImageArea.style.height = '';
             this.currentImageWrapbox.style.height = `calc(49vh - ${altHeight} + 1rem)`;
-            if (imageEditor) {
-                imageEditor.inputDiv.style.height = `calc(49vh - ${altHeight})`;
-            }
             this.editorSizebar.style.height = `calc(49vh - ${altHeight})`;
             this.currentImageBatch.style.height = '';
             this.topSection.style.height = '';
@@ -516,7 +514,7 @@ class GenTabLayout {
             });
         }
         this.altText.addEventListener('keydown', (e) => {
-            if (e.key == 'Enter' && !e.shiftKey && getUserSetting('enterkeygenerates', 'true')) {
+            if (e.key == 'Enter' && !e.shiftKey && internalSiteJsGetUserSetting('enterkeygenerates', 'true')) {
                 this.altText.dispatchEvent(new Event('change'));
                 getRequiredElementById('alt_generate_button').click();
                 e.preventDefault();
@@ -525,7 +523,7 @@ class GenTabLayout {
             }
         });
         this.altNegText.addEventListener('keydown', (e) => {
-            if (e.key == 'Enter' && !e.shiftKey && getUserSetting('enterkeygenerates', 'true')) {
+            if (e.key == 'Enter' && !e.shiftKey && internalSiteJsGetUserSetting('enterkeygenerates', 'true')) {
                 this.altNegText.dispatchEvent(new Event('change'));
                 getRequiredElementById('alt_generate_button').click();
                 e.preventDefault();
@@ -621,6 +619,12 @@ class GenTabLayout {
             this.reapplyPositions();
             this.buildConfigArea();
         }
+    }
+
+    onMobileDesktopLayoutChange() {
+        this.mobileDesktopLayout = getRequiredElementById('mobile_desktop_layout_selector').value;
+        localStorage.setItem('layout_mobileDesktop', this.mobileDesktopLayout);
+        this.reapplyPositions();
     }
 }
 

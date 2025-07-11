@@ -157,10 +157,10 @@ public class Settings : AutoConfiguration
         [ConfigComment("If true, max t2i simultaneous value is not limited by backend count.\nIe, users may queue as many gens as they want directly to backends, with no overload prevention.\nThis may be preferable on personal instances of Swarm to enforce stricter queue ordering.\nUser role max t2i simultaneous value is still applied.")]
         public bool UnrestrictedMaxT2iSimultaneous = false;
 
-        [ConfigComment("How many minutes to wait after the last generation before automatically freeing up VRAM (to prevent issues with other programs).\nThis has the downside of a small added bit of time to load back onto VRAM at next usage.\nUse a decimal number to free after seconds.\nDefaults to 10 minutes.")]
+        [ConfigComment("How many minutes to wait after the last generation before automatically freeing up VRAM (to prevent issues with other programs).\nThis has the downside of a small added bit of time to load back onto VRAM at next usage.\nUse a decimal number to free after seconds.\nDefaults to 10 minutes.\nSet to -1 to disable.")]
         public double ClearVRAMAfterMinutes = 10;
 
-        [ConfigComment("How many minutes to wait after the last generation before automatically freeing up system RAM (to prevent issues with other programs).\nThis has the downside of causing models to fully load from data drive at next usage.\nUse a decimal number to free after seconds.\nDefaults to 60 minutes (one hour).")]
+        [ConfigComment("How many minutes to wait after the last generation before automatically freeing up system RAM (to prevent issues with other programs).\nThis has the downside of causing models to fully load from data drive at next usage.\nUse a decimal number to free after seconds.\nDefaults to 60 minutes (one hour).\nSet to -1 to disable.")]
         public double ClearSystemRAMAfterMinutes = 60;
 
         [ConfigComment("If true, any time you load the UI, trigger a server refresh.\nIf false, only triggers a refresh if you restart Swarm or trigger a refresh manually from the Quick Tools menu.\nDefaults to true.")]
@@ -338,20 +338,51 @@ public class Settings : AutoConfiguration
             [ConfigComment("Whether to store metadata into saved images.\nDefaults enabled.")]
             public bool SaveMetadata = true;
 
+            [ConfigComment("If not set to 'false', encodes metadata into the pixels of the image itself.\nThis can bypass services that strip normal metadata.\n'Alpha' uses the alpha channel. 'RGB' uses color channels.\nAlpha method Noticeably increases file size.\nCurrently only PNG is supported.")]
+            [ManualSettingsOptions(Vals = ["false", "Alpha", "RGB"])]
+            public string StealthMetadata = "false";
+
             [ConfigComment("If set to non-0, adds DPI metadata to saved images.\n'72' is a good value for compatibility with some external software.")]
             public int DPI = 0;
 
-            [ConfigComment("If set to true, a '.txt' file will be saved alongside images with the image metadata easily viewable.\nThis can work even if saving in the image is disabled. Defaults disabled.")]
+            [ConfigComment("If enabled, a '.swarm.json' file will be saved alongside images with the image metadata easily viewable.\nThis can work even if saving in the image is disabled. Defaults disabled.")]
             public bool SaveTextFileMetadata = false;
+
+            [ConfigComment("Images that are transient/temporary (not saved to file) generally are better off not being converted between image formats, or having metadata added.\nHowever, if you want to make the conversion and metadata apply anyway, you can enable this option.\nIf you use 'Do Not Save' param frequently but manually save images, you may want this.")]
+            public bool ReformatTransientImages = false;
         }
 
         [ConfigComment("Settings related to saved file format.")]
         public FileFormatData FileFormat = new();
 
+        public class UserUIData : AutoConfiguration
+        {
+            [ConfigComment("If enabled, you can hold ALT and press left/right arrows to move 'tags' in a prompt - that is, your currently selected comma-separated section will be moved left or right relative to other comma-separated sections.")]
+            public bool TagMoveHotkeyEnabled = false;
+
+            [ConfigComment("If enabled, when pressing delete on an image, ask if you're sure before doing that (bypass by holding shift).\nIf unchecked, there won't be any check.\nDefaults enabled.")]
+            public bool CheckIfSureBeforeDelete = true;
+
+            [ConfigComment("Comma-separated list of fields to display in the preset Details view.\nUse 'name' for the preset name, 'path' for the full preset path, 'description' for the description, or 'params' for the param list.\nIf unset, will act as 'path,description,params'")]
+            public string PresetListDetailsFields = "";
+        }
+
+        [ConfigComment("Settings related to the user interface, entirely contained to the frontend.")]
+        public UserUIData UI = new();
+
+        public class ParamParsingData : AutoConfiguration
+        {
+            [ConfigComment("Whether LoRAs can be added to a generation multiple times.\nIf false, the firstmost usage of a LoRA will be kept and others will be discarded.")]
+            public bool AllowLoraStacking = true;
+        }
+
+        [ConfigComment("Settings related to the parsing of generation parameters.")]
+        public ParamParsingData ParamParsing = new();
+
         [ConfigComment("Whether your image output files save to server data drive or not.\nDisabling this can make some systems misbehave, and makes the Image History do nothing.")]
         public bool SaveFiles = true;
 
-        [ConfigComment("If true, folders will be discarded from starred image paths.")]
+        [ConfigComment("If enabled, folders will be discarded from starred image paths.\nIf disabled, entire original image path will be replicated beneath the star folder.")]
         public bool StarNoFolders = false;
 
         [ConfigComment("List of role IDs applied to this user. Defaults to owner (for local/accountless usage).")]
@@ -367,18 +398,18 @@ public class Settings : AutoConfiguration
 
         [ConfigComment("What theme to use. Default is 'modern_dark'.")]
         [SettingsOptions(Impl = typeof(ThemesImpl))]
-        public string Theme = "modern_dark";
+        public string Theme = "modern_dark"; // TODO: UserUI
 
         [ConfigComment("If true, images in the main center area will always grow to better fill the screen.")]
-        public bool CenterImageAlwaysGrow = false;
+        public bool CenterImageAlwaysGrow = false; // TODO: UserUI
 
         [ConfigComment("If true, when 'Auto Swap To Images' is enabled, and you have FullView open, the FullView will also be swapped.\nIf false, the FullView will not change.")]
-        public bool AutoSwapImagesIncludesFullView = false;
+        public bool AutoSwapImagesIncludesFullView = false; // TODO: UserUI
 
         [ConfigComment("A list of what buttons to include directly under images in the main prompt area of the Generate tab.\nOther buttons will be moved into the 'More' dropdown.\nThis should be a comma separated list."
             + "\nThe following options are available: \"Use As Init\", \"Use As Image Prompt\", \"Edit Image\", \"Upscale 2x\", \"Star\", \"Reuse Parameters\", \"Open In Folder\", \"Delete\", \"Download\" \"View In History\", \"Refine Image\""
             + "\nThe default is blank, which currently implies 'Use As Init,Edit Image,Star,Reuse Parameters'")]
-        public string ButtonsUnderMainImages = "";
+        public string ButtonsUnderMainImages = ""; // TODO: UserUI
 
         [ConfigComment("How to format image metadata on the Generate tab when looking at an image.\n'below' means put the metadata below the image.\n'side' means put the image in a vertical column to the side.\n'auto' means switch to whichever fits better depending on the page width.\nDefault is 'auto'.")]
         [ManualSettingsOptions(Vals = ["auto", "below", "side"])]
@@ -394,13 +425,13 @@ public class Settings : AutoConfiguration
 
         [ConfigComment("The format for parameter hints to display as.\nDefault is 'BUTTON'.")]
         [SettingsOptions(Impl = typeof(SettingsOptionsAttribute.ForEnum<HintFormatOptions>))]
-        public string HintFormat = "BUTTON";
+        public string HintFormat = "BUTTON"; // TODO: UserUI
 
         [ConfigComment("The delay, in seconds, for parameter hints when 'HOVER_DELAY' is selected.")]
-        public float HoverDelaySeconds = 0.5f;
+        public float HoverDelaySeconds = 0.5f; // TODO: UserUI
 
         [ConfigComment("How many lines of text to display in the standard prompt box before cutting off to a scroll bar.\nActual size in practice tends to be a few lines shorter due to browser and font variations.\nDefault is 10.")]
-        public int MaxPromptLines = 10;
+        public int MaxPromptLines = 10; // TODO: UserUI
 
         public class VAEsData : AutoConfiguration
         {
@@ -448,7 +479,7 @@ public class Settings : AutoConfiguration
         public int MaxSimulPreviews = 1;
 
         [ConfigComment("If true, hitting enter while in the prompt box starts generation.\nIf false, hitting enter will insert a newline.")]
-        public bool EnterKeyGenerates = true;
+        public bool EnterKeyGenerates = true; // TODO: UserUI
 
         [ConfigComment("Delay, in seconds, between Generate Forever updates.\nIf the delay hits and a generation is still waiting, it will be skipped.\nDefault is 0.1 seconds.")]
         public double GenerateForeverDelay = 0.1;
@@ -457,7 +488,7 @@ public class Settings : AutoConfiguration
         public int GenerateForeverQueueSize = 1;
 
         [ConfigComment("How long to remember your last parameters for, in hours, inside browser cookies.\nDefault is 6 hours (long enough that you can close+reopen and get same params, but short enough that if you close for the day and come back you get a fresh UI).")]
-        public double ParameterMemoryDurationHours = 6;
+        public double ParameterMemoryDurationHours = 6; // TODO: UserUI
 
         public class LanguagesImpl : SettingsOptionsAttribute.AbstractImpl
         {
@@ -466,7 +497,7 @@ public class Settings : AutoConfiguration
 
         [ConfigComment("What language to display the UI in.\nDefault is 'en' (English).")]
         [SettingsOptions(Impl = typeof(LanguagesImpl))]
-        public string Language = "en";
+        public string Language = "en"; // TODO: UserUI
 
         [ConfigComment("Comma-separated list of parameters to exclude from 'Reuse Parameters'.\nFor example, set 'model' to not copy the model, or 'model,refinermodel,videomodel' to really never copy any models.")]
         public string ReuseParamExcludeList = "wildcardseed";
@@ -531,6 +562,9 @@ public class Settings : AutoConfiguration
     {
         [ConfigComment("Optionally specify a (raw HTML) welcome message here. If specified, will override the automatic welcome messages.")]
         public string OverrideWelcomeMessage = "";
+
+        [ConfigComment("Optionally specify a (raw HTML) welcome message here. If specified, will be added to the standard welcome message.")]
+        public string ExtraWelcomeInfo = "";
 
         [ConfigComment("Animated previews make the image history nicer when you've generated videos, but may negatively impact performance.\nIf having image history loaded with videos generated is negatively affecting your experience, disable this checkbox.\nAfter editing this setting, use the Reset All Metadata button in the Utilities tab.")]
         public bool AllowAnimatedPreviews = true;

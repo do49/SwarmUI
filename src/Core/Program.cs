@@ -163,6 +163,8 @@ public class Program
         {
             Logs.Warning($"Experimental Features are enabled. Issue reports will not be accepted until you turn them off in Server Configuration.");
         }
+        Logs.Init($"Swarm base path is: {Environment.CurrentDirectory}");
+        Logs.Init($"Running on OS: {RuntimeInformation.OSDescription}");
         Logs.StartLogSaving();
         timer.Check("Initial settings load");
         if (ServerSettings.Maintenance.CheckForUpdates)
@@ -181,11 +183,15 @@ public class Program
                     VersionUpdateMessageShort = $"Update available: {newer[0]} (you are running {Utilities.Version}, this is {newer.Length} release(s) behind):\nSee release notes at <a target=\"_blank\" href=\"{url}\">{url}</a>";
                     VersionUpdateMessage = $"{VersionUpdateMessageShort}\nThere is a button available to automatically apply the update on the <a href=\"#Settings-Server\" onclick=\"getRequiredElementById('servertabbutton').click();getRequiredElementById('serverinfotabbutton').click();\">Server Info Tab</a>.";
                 }
+                else if (tags.IsEmpty())
+                {
+                    Logs.Error($"Swarm failed to check for updates! Tag list empty?!");
+                }
                 else
                 {
                     Logs.Init($"Swarm is up to date! You have version {Utilities.Version}, and {tags[0]} is the latest.");
                 }
-            }));
+            }, "check for updates"));
         }
         waitFor.Add(Utilities.RunCheckedTask(async () =>
         {
@@ -195,14 +201,24 @@ public class Program
                 string[] parts = showOutput.SplitFast('^', 2);
                 DateTimeOffset date = DateTimeOffset.Parse(parts[1].Trim()).ToUniversalTime();
                 CurrentGitDate = $"{date:yyyy-MM-dd HH:mm:ss}";
-                Logs.Init($"Current git commit is [{parts[0]}: {parts[2]}], marked as date {CurrentGitDate}");
+                TimeSpan relative = DateTimeOffset.UtcNow - date;
+                string ago = $"{relative.Hours} hour{(relative.Hours == 1 ? "" : "s")} ago";
+                if (relative.Hours > 48)
+                {
+                    ago = $"{relative.Days} day{(relative.Days == 1 ? "" : "s")} ago";
+                }
+                else if (relative.Hours == 0)
+                {
+                    ago = $"{relative.Minutes} minute{(relative.Minutes == 1 ? "" : "s")} ago";
+                }
+                Logs.Init($"Current git commit is [{parts[0]}: {parts[2]}], marked as date {CurrentGitDate} ({ago})");
             }
             catch (Exception ex)
             {
                 Logs.Error($"Failed to get git commit date: {ex.ReadableString()}");
                 CurrentGitDate = "Git failed to load";
             }
-        }));
+        }, "check current git commit"));
         waitFor.Add(Utilities.RunCheckedTask(async () =>
         {
             NvidiaUtil.NvidiaInfo[] gpuInfo = NvidiaUtil.QueryNvidia();
@@ -246,7 +262,7 @@ public class Program
                     Logs.Init($"Will use GPU accelerations specific to NVIDIA GeForce RTX 30xx series and newer.");
                 }
             }
-        }));
+        }, "load gpu info"));
         T2IModelClassSorter.Init();
         Extensions.RunOnAllExtensions(e => e.OnPreInit());
         timer.Check("Extension PreInit");
@@ -260,7 +276,7 @@ public class Program
         };
         Sessions = new();
         Web = new();
-        timer.Check("Prep Objects");
+        timer.Check("Prep Options");
         Web.PreInit();
         timer.Check("Web PreInit");
         Extensions.RunOnAllExtensions(e => e.OnInit());
@@ -353,6 +369,10 @@ public class Program
         }
         Logs.Init($"SwarmUI v{Utilities.Version} - {ServerSettings.UserAuthorization.InstanceTitle} is now running.");
         WebhookManager.SendWebhook("Startup", ServerSettings.WebHooks.ServerStartWebhook, ServerSettings.WebHooks.ServerShutdownWebhook);
+        if (Environment.CurrentDirectory.Contains("StableSwarmUI"))
+        {
+            Logs.Warning("You are running SwarmUI in a folder labeled 'StableSwarmUI', indicating you may have ran from an extremely outdated legacy version of SwarmUI (Swarm split from Stability in June 2024). You should probably reinstall fresh from https://github.com/mcmonkeyprojects/SwarmUI");
+        }
         WebServer.WebApp.WaitForShutdown();
         Shutdown();
     }
@@ -461,7 +481,7 @@ public class Program
     /// <summary>Tell the server to shutdown and restart. This call is not blocking, other code will continue momentarily.</summary>
     public static void RequestRestart()
     {
-        _ = Utilities.RunCheckedTask(() => Shutdown(42));
+        _ = Utilities.RunCheckedTask(() => Shutdown(42), "shutdown");
     }
 
     /// <summary>Main shutdown handler. Tells everything to stop.</summary>
@@ -668,7 +688,8 @@ public class Program
                 Name = "Ngrok",
                 Path = GetCommandLineFlag("ngrok-path", null),
                 Region = GetCommandLineFlag("proxy-region", null),
-                BasicAuth = GetCommandLineFlag("ngrok-basic-auth", null)
+                BasicAuth = GetCommandLineFlag("ngrok-basic-auth", null),
+                Args = GetCommandLineFlag("proxy-added-args", ".")[1..].Split(' ', StringSplitOptions.RemoveEmptyEntries)
             };
         }
         string cloudflared = ServerSettings.Network.CloudflaredPath;
@@ -678,7 +699,8 @@ public class Program
             {
                 Name = "Cloudflare",
                 Path = GetCommandLineFlag("cloudflared-path", cloudflared).Trim('"'),
-                Region = GetCommandLineFlag("proxy-region", null)
+                Region = GetCommandLineFlag("proxy-region", null),
+                Args = GetCommandLineFlag("proxy-added-args", ".")[1..].Split(' ', StringSplitOptions.RemoveEmptyEntries)
             };
         }
         LaunchMode = GetCommandLineFlag("launch_mode", ServerSettings.LaunchMode);

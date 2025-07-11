@@ -294,6 +294,9 @@ function isModelArchCorrect(model) {
             if (model.architecture.endsWith('/vae') && model.compat_class.startsWith('flux-1') && curModelCompatClass.startsWith('hidream-i1')) {
                 return true;
             }
+            if (model.architecture.endsWith('/lora') && model.compat_class.startsWith('flux-1') && curModelCompatClass.startsWith('chroma')) {
+                return true;
+            }
             return model.compat_class == curModelCompatClass;
         }
     }
@@ -317,13 +320,15 @@ class ModelBrowserWrapper {
     }
 
     sortModelLocal(a, b, files) {
-        let aCorrect = isModelArchCorrect(a);
-        let bCorrect = isModelArchCorrect(b);
-        if (aCorrect && !bCorrect) {
-            return -1;
-        }
-        if (!aCorrect && bCorrect) {
-            return 1;
+        if (this.subType != 'Stable-Diffusion') {
+            let aCorrect = isModelArchCorrect(a);
+            let bCorrect = isModelArchCorrect(b);
+            if (aCorrect && !bCorrect) {
+                return -1;
+            }
+            if (!aCorrect && bCorrect) {
+                return 1;
+            }
         }
         let aStarred = this.isStarred(a.name);
         let bStarred = this.isStarred(b.name);
@@ -694,7 +699,7 @@ class ModelBrowserWrapper {
     }
 }
 
-let sdModelBrowser = new ModelBrowserWrapper('Stable-Diffusion', ['', 'inpaint', 'tensorrt', 'depth', 'canny'], 'model_list', 'modelbrowser', (model) => { directSetModel(model.data); });
+let sdModelBrowser = new ModelBrowserWrapper('Stable-Diffusion', ['', 'inpaint', 'tensorrt', 'depth', 'canny', 'kontext'], 'model_list', 'modelbrowser', (model) => { directSetModel(model.data); });
 let sdVAEBrowser = new ModelBrowserWrapper('VAE', ['vae'], 'vae_list', 'sdvaebrowser', (vae) => { directSetVae(vae.data); });
 let sdLoraBrowser = new ModelBrowserWrapper('LoRA', ['lora', 'lora-depth', 'lora-canny'], 'lora_list', 'sdlorabrowser', (lora) => { toggleSelectLora(cleanModelName(lora.data.name)); });
 let sdEmbedBrowser = new ModelBrowserWrapper('Embedding', ['embedding', 'textual-inversion'], 'embedding_list', 'sdembedbrowser', (embed) => { selectEmbedding(embed.data); });

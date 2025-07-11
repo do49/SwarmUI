@@ -136,11 +136,14 @@ function makeWSRequest(url, in_data, callback, depth = 0, errorHandle = null, on
     return socket;
 }
 
-let failedCrash = translatable(`Failed to send request to server. Did the server crash?`);
+let genericAjaxError = translatable(`Failed to send request to server (generic ProgressEvent). Did the server crash?`);
 
 function genericRequest(url, in_data, callback, depth = 0, errorHandle = null) {
     in_data['session_id'] = session_id;
     function fail(e) {
+        if (e instanceof ProgressEvent) {
+            e = genericAjaxError.get();
+        }
         if (errorHandle) {
             errorHandle(e);
             return;
@@ -151,7 +154,7 @@ function genericRequest(url, in_data, callback, depth = 0, errorHandle = null) {
     sendJsonToServer(`API/${url}`, in_data, (status, data) => {
         if (!data) {
             console.log(`Tried making generic request ${url} but failed.`);
-            fail(failedCrash.get());
+            fail(genericServerErrorMsg.get());
             return;
         }
         if (data.error_id && data.error_id == 'invalid_session_id') {
@@ -285,13 +288,43 @@ function textPromptInputHandle(elem) {
     textPromptDoCount(elem);
 }
 
+function internalSiteJsGetUserSetting(name, defaultValue) {
+    if (typeof getUserSetting == 'function') {
+        return getUserSetting(name, defaultValue);
+    }
+    return defaultValue;
+}
+
 function textPromptAddKeydownHandler(elem) {
     let shiftText = (up) => {
         let selStart = elem.selectionStart;
         let selEnd = elem.selectionEnd;
+        if (selStart == selEnd) {
+            let simpleText = elem.value;
+            for (let char of ['\n', '\t', ',', '.']) {
+                simpleText = simpleText.replaceAll(char, ' ');
+            }
+            let lastSpace = simpleText.lastIndexOf(" ", selStart - 1);
+            if (lastSpace != -1) {
+                selStart = lastSpace + 1;
+            }
+            else {
+                selStart = 0;
+            }
+            let nextSpace = simpleText.indexOf(" ", selStart);
+            if (nextSpace != -1) {
+                selEnd = nextSpace;
+            }
+            else {
+                selEnd = simpleText.length;
+            }
+        }
         let before = elem.value.substring(0, selStart);
         let after = elem.value.substring(selEnd);
         let mid = elem.value.substring(selStart, selEnd);
+        if (mid.trim() == "") {
+            return;
+        }
         let strength = 1;
         while (mid.startsWith(" ")) {
             mid = mid.substring(1);
@@ -344,9 +377,53 @@ function textPromptAddKeydownHandler(elem) {
         }
         triggerChangeFor(elem);
     }
+    function moveCommaSeparatedElement(left) {
+        let cursor = elem.selectionStart, cursorEnd = elem.selectionEnd;
+        let parts = elem.value.split(',');
+        let textIndex = 0;
+        let index = -1;
+        for (let i = 0; i < parts.length; i++) {
+            let len = parts[i].length + 1;
+            if (cursor >= textIndex && cursor < textIndex + len) {
+                index = i;
+                break;
+            }
+            textIndex += len;
+        }
+        if (index == -1) {
+            return;
+        }
+        let swapIndex = left ? index - 1 : index + 1;
+        if (swapIndex < 0 || swapIndex >= parts.length) {
+            return;
+        }
+        let originalPart = parts[index];
+        [parts[index], parts[swapIndex]] = [parts[swapIndex], parts[index]];
+        let newValue = '';
+        let newCursor = 0;
+        for (let i = 0; i < parts.length; i++) {
+            if (i > 0) {
+                newValue += ',';
+            }
+            if (i == swapIndex) {
+                newCursor = newValue.length + (cursor - textIndex);
+            }
+            newValue += parts[i];
+        }
+        elem.value = newValue;
+        elem.selectionStart = newCursor;
+        elem.selectionEnd = newCursor + (cursorEnd - cursor);
+        triggerChangeFor(elem);
+    }
     elem.addEventListener('keydown', (e) => {
         if (e.ctrlKey && (e.key == 'ArrowUp' || e.key == 'ArrowDown')) {
             shiftText(e.key == 'ArrowUp');
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+        }
+        if (e.altKey && (e.key == 'ArrowLeft' || e.key == 'ArrowRight') && internalSiteJsGetUserSetting('ui.tagmovehotkeyenabled', false)) {
+            moveCommaSeparatedElement(e.key == 'ArrowLeft');
             e.preventDefault();
             e.stopPropagation();
             return false;
@@ -623,7 +700,7 @@ function makeSecretInput(featureid, id, paramid, name, description, value, place
 }
 
 function dynamicSizeTextBox(elem, min=15) {
-    let maxHeight = parseInt(getUserSetting('maxpromptlines', '10'));
+    let maxHeight = parseInt(internalSiteJsGetUserSetting('maxpromptlines', '10'));
     elem.style.height = '0px';
     let height = elem.scrollHeight;
     let fontSize = parseFloat(window.getComputedStyle(elem).fontSize);
@@ -896,10 +973,10 @@ function specialDebug(message) {
 }
 
 function playCompletionAudio() {
-    let audioFile = getUserSetting('audio.completionsound');
+    let audioFile = internalSiteJsGetUserSetting('audio.completionsound', null);
     if (audioFile) {
         let audio = new Audio(`/Audio/${audioFile}`);
-        audio.volume = parseFloat(getUserSetting('audio.volume', '0.5'));
+        audio.volume = parseFloat(internalSiteJsGetUserSetting('audio.volume', '0.5'));
         audio.play();
     }
 }

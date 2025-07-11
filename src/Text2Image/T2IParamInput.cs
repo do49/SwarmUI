@@ -14,26 +14,37 @@ public class T2IParamInput
     /// <summary>Parameter IDs that must be loaded early on, eg extracted from presets in prompts early. Primarily things that affect backend selection.</summary>
     public static readonly string[] ParamsMustLoadEarly = ["model", "images", "internalbackendtype", "exactbackendid"];
 
+    /// <summary>Lock in valid seeds to this input (ie remove '-1' seed values).</summary>
+    public void LockSeeds()
+    {
+        if (!RawOriginalSeed.HasValue)
+        {
+            RawOriginalSeed = Get(T2IParamTypes.Seed, -1);
+        }
+        if (!TryGet(T2IParamTypes.Seed, out long seed) || seed == -1)
+        {
+            Set(T2IParamTypes.Seed, Random.Shared.Next());
+        }
+        if (TryGet(T2IParamTypes.VariationSeed, out long varSeed) && varSeed == -1)
+        {
+            Set(T2IParamTypes.VariationSeed, Random.Shared.Next());
+        }
+    }
+
     /// <summary>Special handlers for any special logic to apply post-loading a param input.</summary>
     public static List<Action<T2IParamInput>> SpecialParameterHandlers =
     [
         input =>
         {
-            if (!input.RawOriginalSeed.HasValue)
+            foreach (T2IPreset preset in input.PendingPresets)
             {
-                input.RawOriginalSeed = input.Get(T2IParamTypes.Seed, -1);
+                preset.ApplyTo(input);
             }
-            if (!input.TryGet(T2IParamTypes.Seed, out long seed) || seed == -1)
-            {
-                input.Set(T2IParamTypes.Seed, Random.Shared.Next());
-            }
+            input.PendingPresets.Clear();
         },
         input =>
         {
-            if (input.TryGet(T2IParamTypes.VariationSeed, out long seed) && seed == -1)
-            {
-                input.Set(T2IParamTypes.VariationSeed, Random.Shared.Next());
-            }
+            input.LockSeeds();
         },
         input =>
         {
@@ -116,6 +127,9 @@ public class T2IParamInput
     /// <summary>A set of feature flags required for this input.</summary>
     public HashSet<string> RequiredFlags = [];
 
+    /// <summary>A list of any user requested presets not yet applied.</summary>
+    public List<T2IPreset> PendingPresets = [];
+
     /// <summary>The session this input came from.</summary>
     public Session SourceSession;
 
@@ -137,6 +151,9 @@ public class T2IParamInput
     /// <summary>If true, special early load has already ran.</summary>
     public bool EarlyLoadDone = false;
 
+    /// <summary>Unique user request ID for this gen request, from <see cref="User.GetNextRequestId"/>. 0 if no session/user available.</summary>
+    public long UserRequestId = 0;
+
     /// <summary>Arbitrary incrementer for sub-minute unique IDs.</summary>
     public static int UIDIncrementer = 0;
 
@@ -150,6 +167,7 @@ public class T2IParamInput
     public T2IParamInput(Session session)
     {
         SourceSession = session;
+        UserRequestId = session?.User?.GetNextRequestId() ?? 0;
         InternalSet.SourceSession = session;
         InterruptToken = session is null ? new CancellationTokenSource().Token : session.SessInterrupt.Token;
         ExtraMeta["date"] = $"{RequestTime:yyyy-MM-dd}";
@@ -165,12 +183,32 @@ public class T2IParamInput
         }
     }
 
+    /// <summary>Reference sheet of 512x512 aspect ratio approximations for custom Aspect Ratio selection.</summary>
+    public static Dictionary<string, (int, int)> ResolutionAspectReferences = new()
+    {
+        ["1:1"] = (512, 512),
+        ["4:3"] = (576, 448),
+        ["3:2"] = (608, 416),
+        ["8:5"] = (608, 384),
+        ["16:9"] = (672, 384),
+        ["21:9"] = (768, 320),
+        ["2:3"] = (416, 608),
+        ["5:8"] = (384, 608),
+        ["9:16"] = (384, 672),
+        ["9:21"] = (320, 768)
+    };
+
     /// <summary>Gets the desired image width.</summary>
     public int GetImageWidth(int def = 512)
     {
         if (TryGet(T2IParamTypes.RawResolution, out string res))
         {
             return int.Parse(res.Before('x'));
+        }
+        if (TryGet(T2IParamTypes.SideLength, out int sideLen) && TryGet(T2IParamTypes.AspectRatio, out string aspect) && ResolutionAspectReferences.TryGetValue(aspect, out (int, int) resRef))
+        {
+            // NOTE: This math must match params.js AspectRatio
+            return (int)Utilities.RoundToPrecision(resRef.Item1 * (sideLen / 512.0), 16);
         }
         return Get(T2IParamTypes.Width, def);
     }
@@ -186,6 +224,10 @@ public class T2IParamInput
         {
             return (int)(val * width);
         }
+        if (TryGet(T2IParamTypes.SideLength, out int sideLen) && TryGet(T2IParamTypes.AspectRatio, out string aspect) && ResolutionAspectReferences.TryGetValue(aspect, out (int, int) resRef))
+        {
+            return (int)Utilities.RoundToPrecision(resRef.Item2 * (sideLen / 512.0), 16);
+        }
         return Get(T2IParamTypes.Height, def);
     }
 
@@ -196,6 +238,7 @@ public class T2IParamInput
         toret.InternalSet = InternalSet.Clone();
         toret.ExtraMeta = new Dictionary<string, object>(ExtraMeta);
         toret.RequiredFlags = [.. RequiredFlags];
+        toret.PendingPresets = [.. PendingPresets];
         return toret;
     }
 
@@ -396,13 +439,17 @@ public class T2IParamInput
     {
         T2IPromptHandling.PromptTagContext posContext = new() { Input = this, Param = T2IParamTypes.Prompt.Type.ID };
         InternalSet.ValuesInput["prompt"] = ProcessPromptLike(T2IParamTypes.Prompt, posContext);
-        T2IPromptHandling.PromptTagContext negContext = new() { Input = this, Param = T2IParamTypes.Prompt.Type.ID, Variables = posContext.Variables };
+        T2IPromptHandling.PromptTagContext negContext = new() { Input = this, Param = T2IParamTypes.Prompt.Type.ID, Variables = posContext.Variables, Macros = posContext.Macros };
         InternalSet.ValuesInput["negativeprompt"] = ProcessPromptLike(T2IParamTypes.NegativePrompt, negContext);
     }
 
     /// <summary>Formats embeddings in a prompt string and returns the cleaned string.</summary>
     public static string FillEmbedsInString(string str, Func<string, string> format)
     {
+        while (str.Contains("\0swarmembed\\"))
+        {
+            str = str.Replace("\0swarmembed\\", "\0swarmembed");
+        }
         return StringConversionHelper.QuickSimpleTagFiller(str, "\0swarmembed:", "\0end", format, false);
     }
 

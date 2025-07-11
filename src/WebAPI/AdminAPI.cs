@@ -100,7 +100,14 @@ public static class AdminAPI
         if (t == typeof(float)) { return (float)val; }
         if (t == typeof(bool)) { return (bool)val; }
         if (t == typeof(string)) { return (string)val; }
-        if (t == typeof(List<string>)) { return ((JArray)val).Select(v => (string)v).ToList(); }
+        if (t == typeof(List<string>))
+        {
+            if (val is JArray jarr)
+            {
+                return jarr.Select(v => (string)v).ToList();
+            }
+            return ((string)val).Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToList();
+        }
         return null;
     }
     [API.APIDescription("Returns a list of the server settings, will full metadata.",
@@ -505,7 +512,7 @@ public static class AdminAPI
                 }
             }
             updatesPreview = [.. commits];
-        }));
+        }, "check for core update"));
         foreach (Extension extension in Program.Extensions.Extensions.Where(e => !e.IsCore))
         {
             Extension ext = extension; // lambda capture
@@ -523,7 +530,7 @@ public static class AdminAPI
                         extensions.Add(ext.ExtensionName);
                     }
                 }
-            }));
+            }, "check for extension update"));
         }
         await Task.WhenAll(fetchTasks);
         Logs.Debug($"Update check complete - {serverUpdates} Swarm commits, {extensions.Count} extensions, {backendUpdates.Count} backends.");

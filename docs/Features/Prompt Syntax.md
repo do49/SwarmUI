@@ -63,12 +63,31 @@
 ![img](/docs/images/setvar-cat.jpg)
 
 - You can store and reuse variables within a prompt. This is primarily intended for repeating randoms & wildcards.
-    - Store with the syntax: `<setvar[var_name]:data>`
+    - Store with the syntax: `<setvar[var_name,emit]:data>` where `emit` is `true` or `false` (defaults true)
         - For example: `<setvar[color]:<random:red, blue, purple>>`
     - Call back with the syntax: `<var:var_name>`
         - For example: `<var:color>`
     - Here's a practical full example: `a photo of a woman with <setvar[color]:<random:blonde, black, red, blue, green, rainbow>> hair standing in the middle of a wide open street. She is smiling and waving at the camera, with beautiful sunlight glinting through her <var:color> hair. <segment:face and hair> extremely detailed close up shot of a woman with shiny <var:color> hair`
         - Notice how the var is called back, even in the segment, to allow for selecting a random hair color but keeping it consistent within the generation
+    - If you want to avoid the `setvar` emitting a copy of the value, you can use eg `<setvar[color,false]:x y z>`
+        - For example, `a <setvar[color]:red> dog with <var[color]> eyes` becomes `a red dog with red eyes`,
+        - but `<setvar[color,false]:red> a dog with <var[color]> eyes` becomes `a dog with red eyes`
+
+## Macros
+
+![img](/docs/images/setmacro-cat.jpg)
+
+- Similar to variables, you can store and reuse chunks of prompt syntax as a macro. This is useful for dynamically repeating complicated randoms.
+    - Store with the syntax: `<setmacro[macro_name,emit]:data>` where `emit` is `true` or `false` (defaults true)
+        - For example: `<setmacro[color]:<random:red, blue, purple>>`
+    - Call back with the syntax: `<macro:macro_name>`
+        - For example: `in a room with <macro:color> walls, <macro:color> floors, and <macro:color> carpet`
+    - Unlike Variables, macros are not evaluated when being set, but instead are evaluated when used via `<macro:...>`
+    - Here's a full example: `Photo of a woman with <setmacro[color]:<random:red|white|green|blue|purple|orange|black|brown>> hair, <macro:color> shirt, <macro:color> pants`
+        - A separate random color will be chosen for hair, shirt, and pants.
+    - If you want to avoid the `setmacro` emitting a copy of the value, you can use eg `<setmacro[color,false]:x y z>`
+        - For example, `a <setmacro[color]:red> dog with <macro[color]> eyes` becomes `a red dog with red eyes`,
+        - but `<setmacro[color,false]:red> a dog with <macro[color]> eyes` becomes `a dog with red eyes`
 
 ## Trigger Phrase
 
@@ -131,7 +150,7 @@
         - To control the creativity/threshold with a yolo model just append `,<creativity>,<threshold>`, for example `<segment:yolo-face_yolov8m-seg_60.pt-1,0.8,0.25>` sets a `0.8` creativity and `0.25` threshold.
             - Note the default "confidence threshold" for Yolo models is `0.25`, which is different than is often used with ClipSeg, and does not have a "max threshold" like ClipSeg does.
         - If you have a yolo model with multiple supported classes, you can filter specific classes by appending `:<classes>:` to the model name where `<classes>` is a comma-separated list of class IDs or names, e.g., `<segment:yolo-modelnamehere:0,apple,2:,0.8,0.25>`
-    - There's an advanced parameter under `Regional Prompting` named `Segment Model` to customize the base model used for segment processing
+    - There's an advanced parameter under `Segment Refining` named `Segment Model` to customize the base model used for segment processing
     - There's also a parameter named `Save Segment Mask` to save a preview copy of the generated mask
 
 ## Clear (Transparency)
@@ -180,9 +199,15 @@
     - The automatic inpaint can be helpful for improving quality of objects, especially for small regions, but also might produce unexpected results.
     - Objects may use global feature changes, such as `<lora:` syntax input to apply a lora to the object in the inpaint phase.
 
+## Video
+
+- When using image2video, you can use `<video>` to supply an alternate prompt for the image-to-video generation.
+    - For example, `a photo of a cat <video> the cat walks forward`
+
 ## Video Extend
 
 - You can use `<extend:frames>` to extend a video by a given number of frames using an Image-To-Video model.
+    - Note: This is not a very advanced or capable system currently. This is an experimental feature that only some models will respond decently to, and it will almost always have quality issues.
     - For example, `<extend:33>` will extend the video by 33 frames.
     - Use the `Video Extend` parameter group to configure values for this. At least `Video Extend Model` must be set.
     - Must set Overlap less than 1/3rd of the extend frame count.

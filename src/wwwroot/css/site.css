@@ -531,6 +531,9 @@ textarea, input, select {
     background-color: color-mix(in srgb, var(--button-background) 40%, rgba(100, 0, 0, 0.5));
     color: color-mix(in srgb, var(--button-text) 60%, transparent);
 }
+.simpler-button-disable:disabled {
+    background-color: color-mix(in srgb, var(--button-background) 40%, transparent);
+}
 .text_button {
     background-color: color-mix(in srgb, var(--button-background) 50%, transparent);
     color: var(--text);
@@ -781,6 +784,9 @@ textarea, input, select {
     overflow-y: auto;
     max-width: 100vw;
     padding-bottom: 10rem;
+}
+.inline-block {
+    display: inline-block;
 }
 
 

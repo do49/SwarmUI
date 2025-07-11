@@ -11,7 +11,7 @@ class ImageFullViewHelper {
             if (e.target.tagName == 'BODY') {
                 return; // it's impossible on the genpage to actually click body, so this indicates a bugged click, so ignore it
             }
-            if (!this.noClose && this.modal.style.display == 'block' && !findParentOfClass(e.target, 'imageview_popup_modal_undertext')) {
+            if (!this.noClose && this.modal.style.display == 'block' && !findParentOfClass(e.target, 'imageview_popup_modal_undertext') && !findParentOfClass(e.target, 'image_fullview_extra_buttons')) {
                 this.close();
                 e.preventDefault();
                 e.stopPropagation();
@@ -27,6 +27,8 @@ class ImageFullViewHelper {
         this.content.addEventListener('mousedown', this.onMouseDown.bind(this));
         document.addEventListener('mouseup', this.onGlobalMouseUp.bind(this));
         document.addEventListener('mousemove', this.onGlobalMouseMove.bind(this));
+        this.fixButtonDelay = null;
+        this.lastClosed = 0;
     }
 
     getImg() {
@@ -76,8 +78,8 @@ class ImageFullViewHelper {
         let newTop = this.getImgTop() + yDiff;
         let overWidth = img.parentElement.offsetWidth / 2;
         let overHeight = img.parentElement.offsetHeight / 2;
-        newLeft = Math.min(overWidth, Math.max(newLeft, img.parentElement.offsetWidth - img.width - overWidth));
-        newTop = Math.min(overHeight, Math.max(newTop, img.parentElement.offsetHeight - img.height - overHeight));
+        newLeft = Math.min(overWidth, Math.max(newLeft, img.parentElement.offsetWidth - img.offsetWidth - overWidth));
+        newTop = Math.min(overHeight, Math.max(newTop, img.parentElement.offsetHeight - img.offsetHeight - overHeight));
         img.style.left = `${newLeft}px`;
         img.style.top = `${newTop}px`;
     }
@@ -102,7 +104,9 @@ class ImageFullViewHelper {
         if (wrap.style.textAlign == 'center') {
             let img = this.getImg();
             wrap.style.textAlign = 'left';
-            let imgAspectRatio = img.naturalWidth / img.naturalHeight;
+            let width = img.naturalWidth ?? img.videoWidth;
+            let height = img.naturalHeight ?? img.videoHeight;
+            let imgAspectRatio = width / height;
             let wrapAspectRatio = wrap.offsetWidth / wrap.offsetHeight;
             let targetWidth = wrap.offsetHeight * imgAspectRatio;
             if (targetWidth > wrap.offsetWidth) {
@@ -148,7 +152,9 @@ class ImageFullViewHelper {
         let img = this.getImg();
         let origHeight = this.getHeightPercent();
         let zoom = Math.pow(this.zoomRate, -e.deltaY / 100);
-        let maxHeight = Math.sqrt(img.naturalWidth * img.naturalHeight) * 2;
+        let width = img.naturalWidth ?? img.videoWidth;
+        let height = img.naturalHeight ?? img.videoHeight;
+        let maxHeight = Math.sqrt(width * height) * 2;
         let newHeight = Math.max(10, Math.min(origHeight * zoom, maxHeight));
         if (newHeight > maxHeight / 5) {
             img.style.imageRendering = 'pixelated';
@@ -166,10 +172,13 @@ class ImageFullViewHelper {
     }
 
     showImage(src, metadata) {
+        this.currentSrc = src;
+        this.currentMetadata = metadata;
         let isVideo = isVideoExt(src);
-        let imgHtml = `<img class="imageview_popup_modal_img" id="imageview_popup_modal_img" style="cursor:grab;max-width:100%;object-fit:contain;" src="${src}">`;
+        let encodedSrc = escapeHtmlForUrl(src);
+        let imgHtml = `<img class="imageview_popup_modal_img" id="imageview_popup_modal_img" style="cursor:grab;max-width:100%;object-fit:contain;" src="${encodedSrc}">`;
         if (isVideo) {
-            imgHtml = `<video class="imageview_popup_modal_img" id="imageview_popup_modal_img" style="cursor:grab;max-width:100%;object-fit:contain;" autoplay loop muted><source src="${src}" type="video/${src.substring(src.lastIndexOf('.') + 1)}"></video>`;
+            imgHtml = `<video class="imageview_popup_modal_img" id="imageview_popup_modal_img" style="cursor:grab;max-width:100%;object-fit:contain;" autoplay loop muted><source src="${encodedSrc}" type="video/${encodedSrc.substring(encodedSrc.lastIndexOf('.') + 1)}"></video>`;
         }
         this.content.innerHTML = `
         <div class="modal-dialog" style="display:none">(click outside image to close)</div>
@@ -178,16 +187,54 @@ class ImageFullViewHelper {
                 ${imgHtml}
             </div>
             <div class="imageview_popup_modal_undertext">
-            ${formatMetadata(metadata)}
+                <div class="image_fullview_extra_buttons"></div>
+                ${formatMetadata(metadata)}
             </div>
         </div>`;
+        let subDiv = this.content.querySelector('.image_fullview_extra_buttons');
+        for (let added of buttonsForImage(getImageFullSrc(src), src, metadata)) {
+            if (added.href) {
+                if (added.is_download) {
+                    subDiv.appendChild(createDiv(null, 'inline-block', `<a class="text_button basic-button translate" href="${added.href}" title="${added.title}" download>${added.label}</a>`));
+                }
+                else {
+                    subDiv.appendChild(createDiv(null, 'inline-block', `<a class="text_button basic-button translate" href="${added.href}" title="${added.title}">${added.label}</a>`));
+                }
+            }
+            else {
+                quickAppendButton(subDiv, added.label, (e, button) => added.onclick(button), '', added.title);
+            }
+        }
         this.modalJq.modal('show');
+        if (this.fixButtonDelay) {
+            clearTimeout(this.fixButtonDelay);
+        }
+        if (Date.now() - this.lastClosed > 200) {
+            subDiv.style.pointerEvents = 'none';
+            for (let button of subDiv.getElementsByTagName('button')) {
+                button.disabled = true;
+                button.classList.add('simpler-button-disable');
+            }
+            this.fixButtonDelay = setTimeout(() => {
+                if (subDiv && subDiv.parentElement) {
+                    subDiv.style.pointerEvents = 'auto';
+                    for (let button of subDiv.getElementsByTagName('button')) {
+                        button.disabled = false;
+                    }
+                }
+                this.fixButtonDelay = null;
+            }, 500);
+        }
     }
 
     close() {
+        if (!this.isOpen()) {
+            return;
+        }
         this.isDragging = false;
         this.didDrag = false;
         this.modalJq.modal('hide');
+        this.lastClosed = Date.now();
     }
 
     isOpen() {
@@ -234,6 +281,14 @@ showLoadSpinnersElem.checked = localStorage.getItem('showLoadSpinners') != 'fals
 /** Called when the user changes show-load-spinners toggle to update local storage. */
 function toggleShowLoadSpinners() {
     localStorage.setItem('showLoadSpinners', `${showLoadSpinnersElem.checked}`);
+}
+
+/** Reference to the separate-batches toggle checkbox. */
+let separateBatchesElem = getRequiredElementById('separate_batches_checkbox');
+separateBatchesElem.checked = localStorage.getItem('separateBatches') == 'true';
+/** Called when the user changes separate-batches toggle to update local storage. */
+function toggleSeparateBatches() {
+    localStorage.setItem('separateBatches', `${separateBatchesElem.checked}`);
 }
 
 function clickImageInBatch(div) {
@@ -328,7 +383,8 @@ function copy_current_image_params() {
         metadata.aspectratio = 'Custom';
     }
     let exclude = getUserSetting('reuseparamexcludelist').split(',').map(s => cleanParamName(s));
-    resetParamsToDefault(exclude);
+    let resetExclude = [...exclude, ...Object.keys(metadata), ...Object.keys(extra).map(e => e.endsWith('_filename') ? e.substring(0, e.length - '_filename'.length) : null).filter(e => e != null)];
+    resetParamsToDefault(resetExclude, false);
     for (let param of gen_param_types) {
         if (param.nonreusable || exclude.includes(param.id)) {
             continue;
@@ -344,7 +400,7 @@ function copy_current_image_params() {
                 }
             }
         }
-        else if (elem && param.toggleable && param.visible) {
+        else if (elem && param.toggleable && param.visible && !resetExclude.includes(param.id)) {
             let toggle = getRequiredElementById(`input_${param.id}_toggle`);
             toggle.checked = false;
             doToggleEnable(elem.id);
@@ -423,6 +479,9 @@ window.addEventListener('keydown', function(kbevent) {
     else if (kbevent.key === "Enter" && kbevent.ctrlKey && isVisible(getRequiredElementById('main_image_area'))) {
         getRequiredElementById('alt_generate_button').click();
     }
+    else if (kbevent.key === "Enter" && kbevent.ctrlKey && isVisible(getRequiredElementById('simple_generate_button'))) {
+        getRequiredElementById('simple_generate_button').click();
+    }
     else {
         return;
     }
@@ -476,6 +535,9 @@ function toggleStar(path, rawSrc) {
     genericRequest('ToggleImageStarred', {'path': path}, data => {
         let curImgImg = document.getElementById('current_image_img');
         if (curImgImg && curImgImg.dataset.src == rawSrc) {
+            let oldMetadata = JSON.parse(curImgImg.dataset.metadata);
+            let newMetadata = { ...oldMetadata, is_starred: data.new_state };
+            curImgImg.dataset.metadata = JSON.stringify(newMetadata);
             let button = getRequiredElementById('current_image').querySelector('.star-button');
             if (data.new_state) {
                 button.classList.add('button-starred-image');
@@ -495,6 +557,11 @@ function toggleStar(path, rawSrc) {
         if (historyDiv) {
             historyDiv.dataset.metadata = JSON.stringify({ ...(JSON.parse(historyDiv.dataset.metadata ?? '{}') ?? {}), is_starred: data.new_state });
             historyDiv.classList.toggle('image-block-starred', data.new_state);
+        }
+        if (imageFullView.isOpen() && imageFullView.currentSrc == rawSrc) {
+            let oldMetadata = JSON.parse(imageFullView.currentMetadata);
+            let newMetadata = { ...oldMetadata, is_starred: data.new_state };
+            imageFullView.showImage(rawSrc, JSON.stringify(newMetadata));
         }
     });
 }
@@ -600,8 +667,9 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, 
     img.className = 'current-image-img';
     img.id = 'current_image_img';
     img.dataset.src = src;
+    img.dataset.metadata = metadata || '{}';
     img.dataset.batch_id = batchId;
-    img.onclick = () => imageFullView.showImage(src, metadata);
+    img.onclick = () => imageFullView.showImage(img.dataset.src, img.dataset.metadata);
     let extrasWrapper = isReuse ? document.getElementById('current-image-extras-wrapper') : createDiv('current-image-extras-wrapper', 'current-image-extras-wrapper');
     extrasWrapper.innerHTML = '';
     let buttons = createDiv(null, 'current-image-buttons');
@@ -746,11 +814,12 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, 
             togglerRefine.checked = true;
             triggerChangeFor(togglerInit);
             triggerChangeFor(togglerRefine);
-            mainGenHandler.doGenerate(input_overrides);
-            togglerInit.checked = togglerInitOriginal;
-            togglerRefine.checked = togglerRefineOriginal;
-            triggerChangeFor(togglerInit);
-            triggerChangeFor(togglerRefine);
+            mainGenHandler.doGenerate(input_overrides, {}, () => {
+                togglerInit.checked = togglerInitOriginal;
+                togglerRefine.checked = togglerRefineOriginal;
+                triggerChangeFor(togglerInit);
+                triggerChangeFor(togglerRefine);
+            });
         }));
     }, '', 'Runs an instant generation with Refine / Upscale turned on');
     let metaParsed = { is_starred: false };
@@ -802,6 +871,21 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, 
         curImg.appendChild(img);
         curImg.appendChild(extrasWrapper);
     }
+}
+
+/** Gets the container div element for a generated image to put into, in the batch output view. If Separate Batches is enabled, will use or create a per-batch container. */
+function getPreferredBatchContainer(batchId) {
+    let mainContainer = getRequiredElementById('current_image_batch');
+    if (separateBatchesElem.checked) {
+        let reqId = batchId.split('_')[0];
+        let batchContainer = document.getElementById(`current_image_batch_${reqId}`);
+        if (!batchContainer) {
+            batchContainer = createDiv(`current_image_batch_${reqId}`, null);
+            mainContainer.prepend(batchContainer);
+        }
+        return batchContainer;
+    }
+    return mainContainer;
 }
 
 function appendImage(container, imageSrc, batchId, textPreview, metadata = '', type = 'legacy', prepend = true) {
@@ -869,7 +953,7 @@ function gotImageResult(image, metadata, batchId) {
     updateGenCount();
     let src = image;
     let fname = src && src.includes('/') ? src.substring(src.lastIndexOf('/') + 1) : src;
-    let batch_div = appendImage('current_image_batch', src, batchId, fname, metadata, 'batch');
+    let batch_div = appendImage(getPreferredBatchContainer(batchId), src, batchId, fname, metadata, 'batch');
     batch_div.addEventListener('click', () => clickImageInBatch(batch_div));
     batch_div.addEventListener('contextmenu', (e) => rightClickImageInBatch(e, batch_div));
     if (!document.getElementById('current_image_img') || autoLoadImagesElem.checked) {
@@ -885,7 +969,7 @@ function gotImagePreview(image, metadata, batchId) {
     updateGenCount();
     let src = image;
     let fname = src && src.includes('/') ? src.substring(src.lastIndexOf('/') + 1) : src;
-    let batch_div = appendImage('current_image_batch', src, batchId, fname, metadata, 'batch', true);
+    let batch_div = appendImage(getPreferredBatchContainer(batchId), src, batchId, fname, metadata, 'batch', true);
     batch_div.querySelector('img').dataset.previewGrow = 'true';
     batch_div.addEventListener('click', () => clickImageInBatch(batch_div));
     batch_div.addEventListener('contextmenu', (e) => rightClickImageInBatch(e, batch_div));

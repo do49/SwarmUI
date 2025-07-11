@@ -17,6 +17,8 @@
 [Flux.1](#black-forest-labs-flux1-models) | MMDiT | 2024 | Black Forest Labs | 12B | Partial | Modern, High Quality |
 [Lumina 2.0](#lumina-2) | NextDiT | 2025 | Alpha-VLLM | 2.6B | Partial | Modern, Decent Quality |
 [HiDream i1](#hidream-i1) | MMDiT | 2025 | HiDream AI (Vivago) | 17B | Minimal | Modern, High Quality, very memory intense |
+[Nvidia Cosmos Predict2](#cosmos-predict2) | DiT | 2025 | NVIDIA | 2B/14B | Partial | Modern but bad |
+[OmniGen 2](#omnigen-2) | MLLM | 2025 | VectorSpaceLab | 7B | No | Modern, Decent Quality |
 
 - **Architecture** is the fundamental machine learning structure used for the model, UNet's were used in the past but DiT (Diffusion Transformers) are the modern choice
 - **Scale** is how big the model is - "B" for "Billion", so for example "2B" means "Two billion parameters".
@@ -209,6 +211,12 @@ Parameters and usage is the same as any other normal model.
 ### Install
 
 - Black Forest Labs' Flux.1 model is fully supported in Swarm <https://blackforestlabs.ai/announcing-black-forest-labs/>
+    - **Recommended:** for best performance on modern nvidia cards, use Nunchaku models.
+        - These run twice as fast as the next best speed option (fp8) while using less memory too (close to gguf q4)
+        - Flux dev <https://huggingface.co/mit-han-lab/nunchaku-flux.1-dev/tree/main>
+        - Flux Schnell <https://huggingface.co/mit-han-lab/nunchaku-flux.1-schnell/tree/main>
+        - Use "fp4" for Blackwell (eg RTX 5090) or newer cards, use "int4" for anything older (4090, 3090, etc.)
+        - See the [Nunchaku Support](#nunchaku-mit-han-lab) section for more info on this format
     - **Recommended:** use the [GGUF Format Files](#gguf-quantized-models) (best for most graphics cards)
         - Flux Schnell <https://huggingface.co/city96/FLUX.1-schnell-gguf/tree/main>
         - Flux Dev <https://huggingface.co/city96/FLUX.1-dev-gguf/tree/main>
@@ -272,6 +280,19 @@ Parameters and usage is the same as any other normal model.
     - Creativity `1` works well.
     - Larger masks recommended. Small ones may not replace content.
     - Boosting the `Flux Guidance Scale` way up to eg `30` may improve quality
+- For "**Kontext**" (edit model), it works like other edit models.
+    - Model download here <https://huggingface.co/Comfy-Org/flux1-kontext-dev_ComfyUI/blob/main/split_files/diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors>
+    - Or the official BFL 16 bit upload <https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev>
+    - Or some GGUFs here <https://huggingface.co/QuantStack/FLUX.1-Kontext-dev-GGUF/tree/main>
+    - It's a regular model file, it goes in the regular `diffusion_models` folder same as other flux models.
+    - You will have to manually edit the architecture to be `Flux.1 Kontext Dev`, it misdetects by default
+    - Paste images into the prompt box to serve as the reference images it will use to generate.
+        - If you have an init image and no reference images, the init image will be used.
+        - Be aware that the first image used will be the resolution control of the input. You will want to keep the image between 1024 and 2048 pixels wide.
+            - (If the image is significantly out of scale range, eg 512x512, it will be automatically rescaled for you)
+    - Kontext can take as many images as you want, but the way this works on the inside is a bit hacky and limited quality.
+    - Prompt should describe a *change* to make to the image.
+    - BFL published an official prompting guide here, following it carefully is recommended: <https://docs.bfl.ai/guides/prompting_guide_kontext_i2i>
 - If you want to use the **ACE Plus** Models (Character consistency)
     - Download the LoRAs from https://huggingface.co/ali-vilab/ACE_Plus/tree/main and save as normal loras
     - Enable the Flux Fill model, enable the LoRA you chose
@@ -291,8 +312,10 @@ Parameters and usage is the same as any other normal model.
     - Model files goes in `diffusion_models`
     - Uses standard CFG, not distilled to 1 like other Flux models
     - Official reference workflow uses Scheduler=`Align Your Steps` with Steps=`26` and CFG Scale=`4`
-    - Probably works better with longer prompts
-    - "Sigmoid Offset" scheduler may be useful with Chroma? You can `git clone https://github.com/silveroxides/ComfyUI_SigmoidOffsetScheduler` into your ComfyUI `custom_nodes`, and then restart SwarmUI, and it will be available from the `Scheduler` param dropdown
+        - (It's named `Optimal Steps` in their workflow, but Swarm's AYS scheduler is equivalent to that)
+    - Generally works better with longer prompts. Adding some "prompt fluff" on the end can help clean it up. This is likely related to it being a beta model with an odd training dataset.
+    - "Sigmoid Offset" scheduler is their newer recommendation, it requires a custom node
+        - You can `git clone https://github.com/silveroxides/ComfyUI_SigmoidOffsetScheduler` into your ComfyUI `custom_nodes`, and then restart SwarmUI, and it will be available from the `Scheduler` param dropdown
 
 # Lumina 2
 
@@ -356,6 +379,40 @@ Parameters and usage is the same as any other normal model.
     - **Sigma Shift:** Sigma shift defaults to 3 and does not need to be modified.
         - Officially, HiDream Full and Fast recommend Shift of 3, but for Dev they recommend 6. That 6 on dev seems to look worse though, so I don't recommend it.
 
+# Cosmos Predict2
+
+![img](/docs/images/models/cosmos-predict2-14b.jpg)
+*(Nvidia Cosmos Predict2 14B Text2Image)*
+
+- Nvidia Cosmos Predict2 Text2Image models are natively supported in SwarmUI.
+    - Do not recommend, generally just worse than other contemporary models.
+    - There is a 2B and a 14B variant.
+        - 2B: <https://huggingface.co/Comfy-Org/Cosmos_Predict2_repackaged/blob/main/cosmos_predict2_2B_t2i.safetensors>
+        - 14B: <https://huggingface.co/Comfy-Org/Cosmos_Predict2_repackaged/blob/main/cosmos_predict2_14B_t2i.safetensors>
+        - 14B GGUFs here <https://huggingface.co/city96/Cosmos-Predict2-14B-Text2Image-gguf/tree/main>
+    - **Resolution:** ? 1024-ish.
+    - **CFG and Steps:** Default recommends CFG=4 and Steps=35
+    - **Performance:** Oddly slower than similar sized models by a fair margin. It does not make up for this in quality.
+    - The text encoder is old T5-XXL v1, not the same T5-XXL used by other models.
+        - It will be automatically downloaded.
+    - The VAE is the Wan VAE, and will be automatically downloaded.
+
+# OmniGen 2
+
+- [OmniGen 2](https://github.com/VectorSpaceLab/OmniGen2) is natively partially supported in SwarmUI.
+    - It is technically an LLM, and the LLM features are not supported, only the direct raw image features.
+    - Download the model here <https://huggingface.co/Comfy-Org/Omnigen2_ComfyUI_repackaged/blob/main/split_files/diffusion_models/omnigen2_fp16.safetensors>
+        - Save it to `diffusion_models`
+    - The text encoder is Qwen 2.5 VL (LLM), and will be automatically downloaded.
+    - The VAE is the Flux VAE, and will be automatically downloaded.
+    - Add images to the prompt box to use them as input images for the model. If no input images are given, but you have an Init Image, that will be used as the input image.
+    - **CFG:** Usual CFG rules, around 5 to 7 is a good baseline
+        - The reference workflows for comfy used dual-CFG guidance, IP2P style. If you want to do this, you can use advanced param `IP2P CFG 2` to control the secondary CFG, defaults to 2, and set regular CFG to around 5.
+    - **Steps:** normal ~20
+    - **Resolution:** Normal 1024x1024-ish.
+    - **Performance:** Pretty terribly slow. Incompatible with fp8, incompatible with sage attention.
+    - **Prompts:** their demo page has some prompt tips and examples <https://huggingface.co/spaces/OmniGen2/OmniGen2>
+
 # Video Models
 
 Video models are documented in [Video Model Support](/docs/Video%20Model%20Support.md)
@@ -389,12 +446,16 @@ Video models are documented in [Video Model Support](/docs/Video%20Model%20Suppo
 ## Nunchaku (MIT Han Lab)
 
 - MIT Han Lab's "[Nunchaku](https://github.com/mit-han-lab/ComfyUI-nunchaku)" / 4-bit SVDQuant models are a unusual quant format that is supported in SwarmUI.
-    - Nunchaku is a very dense quantization of models (eg 6GiB for Flux models) that runs very fast (4.4 seconds for a 20 step Flux Dev image on Windows RTX 4090)
-    - They go in `(Swarm)/Models/diffusion_models` and have to have their own folder (eg `(Swarm)/Models/diffusion_models/myfluxmodel`) and work similar to other `diffusion_models` format models
+    - Nunchaku is a very dense quantization of models (eg 6GiB for Flux models) that runs very fast (4.4 seconds for a 20 step Flux Dev image on Windows RTX 4090, vs fp8 is ~11 seconds on the same)
+    - It is optimized for modern nvidia GPUs, with different optimizations per gpu generation
+        - RTX 30xx and 40xx cards need "int4" format nunchaku models
+        - RTX 50xx or newer cards need "fp4" format nunchaku models
+    - They go in `(Swarm)/Models/diffusion_models` and work similar to other `diffusion_models` format models
+        - Make sure you download a "singlefile" nunchaku file, not a legacy "SVDQuant" folder
         - Required VAE & TextEncoders will be autodownloaded if you do not already have them.
-    - The detection is based on the folder structure, you need the files `transformer_blocks.safetensors` and `comfy_config.json` inside the folder. You cannot have unrelated files in the folder.
+    - For the older "SVDQuant" Folder Models <https://huggingface.co/collections/mit-han-lab/svdquant-67493c2c2e62a1fc6e93f45c>, The detection is based on the folder structure, you need the files `transformer_blocks.safetensors` and `comfy_config.json` inside the folder. You cannot have unrelated files in the folder.
     - The first time you try to load a Nunchaku model, it will give you a popup asking to install support
-        - This will autoinstall https://github.com/mit-han-lab/ComfyUI-nunchaku
+        - This will autoinstall <https://github.com/mit-han-lab/ComfyUI-nunchaku> and its dependencies
         - You can accept this popup, and it will install and reload the backend
         - Then try to generate again, and it should just work
     - Nunchaku has various compatibility limitations due to hacks in the custom nodes. Not all lora, textenc, etc. features will work as intended.
