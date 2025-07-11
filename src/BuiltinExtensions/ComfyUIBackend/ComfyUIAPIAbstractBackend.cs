@@ -30,6 +30,8 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
 
     public JObject RawObjectInfo;
 
+    public HashSet<string> NodeTypes = [];
+
     public string ModelFolderFormat = null;
 
     public record class ReusableSocket(string ID, ClientWebSocket Socket);
@@ -53,6 +55,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
         RawObjectInfo = result;
         ConcurrentDictionary<string, List<string>> newModels = [];
         string firstBackSlash = null;
+        NodeTypes = [.. RawObjectInfo.Properties().Select(p => p.Name)];
         void trackModels(string subtype, string node, string param)
         {
             if (RawObjectInfo.TryGetValue(node, out JToken loaderNode))
@@ -131,9 +134,9 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             Status = BackendStatus.RUNNING;
             LoadStatusReport = null;
         }
-        catch (HttpRequestException e)
+        catch (Exception e)
         {
-            if (!ignoreWebError)
+            if (!ignoreWebError || (e is not HttpRequestException && e is not TaskCanceledException) || Program.GlobalProgramCancel.IsCancellationRequested)
             {
                 throw;
             }
@@ -253,7 +256,8 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             JObject toSend = new()
             {
                 ["batch_index"] = batchId,
-                ["overall_percent"] = nodesDone / (float)expectedNodes,
+                ["request_id"] = $"{user_input.UserRequestId}",
+                ["overall_percent"] = (nodesDone + curPercent) / (float)expectedNodes,
                 ["current_percent"] = curPercent
             };
             if (previewMetadata is not null)
@@ -471,8 +475,9 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                             takeOutput(new JObject()
                             {
                                 ["batch_index"] = index == 0 || !int.TryParse(batchId, out int batchInt) ? batchId : batchInt + index,
+                                ["request_id"] = $"{user_input.UserRequestId}",
                                 ["preview"] = $"data:{dataType};base64," + Convert.ToBase64String(output, 8, output.Length - 8),
-                                ["overall_percent"] = nodesDone / (float)expectedNodes,
+                                ["overall_percent"] = (nodesDone + curPercent) / (float)expectedNodes,
                                 ["current_percent"] = curPercent
                             });
                         }
@@ -949,6 +954,8 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             copyParam(T2IParamTypes.ClipGModel);
             copyParam(T2IParamTypes.ClipLModel);
             copyParam(T2IParamTypes.T5XXLModel);
+            copyParam(T2IParamTypes.LLaVAModel);
+            copyParam(T2IParamTypes.LLaMAModel);
         }
         WorkflowGenerator wg = new() { UserInput = input, ModelFolderFormat = ModelFolderFormat, Features = [.. SupportedFeatures] };
         JObject workflow = wg.Generate();

@@ -171,14 +171,14 @@ public class Session : IEquatable<Session>
         }
         string metadata = user_input.GenRawMetadata();
         Task<Image> resultImg = Task.FromResult(image);
-        if (!maySkipConversion || !user_input.Get(T2IParamTypes.DoNotSave, false))
+        if (!maySkipConversion || !user_input.Get(T2IParamTypes.DoNotSave, false) || user_input.SourceSession.User.Settings.FileFormat.ReformatTransientImages)
         {
             string format = user_input.Get(T2IParamTypes.ImageFormat, User.Settings.FileFormat.ImageFormat);
             resultImg = Task.Run(() =>
             {
                 try
                 {
-                    return image.ConvertTo(format, User.Settings.FileFormat.SaveMetadata ? metadata : null, User.Settings.FileFormat.DPI, Math.Clamp(User.Settings.FileFormat.ImageQuality, 1, 100));
+                    return image.ConvertTo(format, User.Settings.FileFormat.SaveMetadata ? metadata : null, User.Settings.FileFormat.DPI, Math.Clamp(User.Settings.FileFormat.ImageQuality, 1, 100), User.Settings.FileFormat.StealthMetadata);
                 }
                 catch (Exception ex)
                 {
@@ -258,11 +258,7 @@ public class Session : IEquatable<Session>
                 {
                     Image actualImage = image.ActualImageTask is null ? image.Img : await image.ActualImageTask;
                     File.WriteAllBytes(fullPath, actualImage.ImageData);
-                    if (User.Settings.FileFormat.SaveTextFileMetadata && !string.IsNullOrWhiteSpace(metadata))
-                    {
-                        File.WriteAllBytes(fullPathNoExt + ".txt", metadata.EncodeUTF8());
-                    }
-                    if (!ImageMetadataTracker.ExtensionsWithMetadata.Contains(extension) && !string.IsNullOrWhiteSpace(metadata))
+                    if ((User.Settings.FileFormat.SaveTextFileMetadata || !ImageMetadataTracker.ExtensionsWithMetadata.Contains(extension)) && !string.IsNullOrWhiteSpace(metadata))
                     {
                         File.WriteAllBytes(fullPathNoExt + ".swarm.json", metadata.EncodeUTF8());
                     }
@@ -274,6 +270,7 @@ public class Session : IEquatable<Session>
                             Utilities.QuickRunProcess(Utilities.FfmegLocation.Value, ["-i", fullPath, "-vcodec", "libwebp", "-filter:v", "fps=fps=6,scale=-1:128", "-lossless", "0", "-compression_level", "2", "-q:v", "60", "-loop", "0", "-preset", "picture", "-an", "-vsync", "0", "-t", "5", fullPathNoExt + ".swarmpreview.webp"]).Wait();
                         }
                     }
+                    Logs.Debug($"Saved an output file as '{fullPath}'");
                     await Task.Delay(TimeSpan.FromSeconds(10)); // (Give time for WebServer to read data from cache rather than having to reload from file for first read)
                     StillSavingFiles.TryRemove(fullPath, out _);
                 });

@@ -95,6 +95,7 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
                         path = $"\"{path}\"";
                     }
                     string cacheOption = skipPipCache ? " --no-cache-dir" : "";
+                    await DoLibFixes(false, false); // Some nodes have cursed deps, so we hack-around a pre-fix here
                     Process p = backends.FirstOrDefault().DoPythonCall($"-s -m pip install{cacheOption} -r {path}");
                     NetworkBackendUtils.ReportLogsFromProcess(p, $"ComfyUI (Requirements Install - {folderName})", "");
                     await p.WaitForExitAsync(Program.GlobalProgramCancel);
@@ -123,8 +124,7 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
     /// <summary>Mapping of node folder names to exact git commits to maintain.</summary>
     public static ConcurrentDictionary<string, string> ComfyNodeGitPins = new()
     {
-        //["ComfyUI-TeaCache"] = "b3429ef3dea426d2f167e348b44cd2f5a3674e7d"
-        ["ComfyUI-nunchaku"] = "4a02394d747533172a0e957e2aac58cba20a508e" // pulid error in newer commits because they updated the node but haven't released new Nunchaku pip lib version
+        // Example: ["ComfyUI-TeaCache"] = "b3429ef3dea426d2f167e348b44cd2f5a3674e7d"
     };
 
     public async Task EnsureNodeRepos()
@@ -282,7 +282,7 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
         return Process.Start(start);
     }
 
-    public static string SwarmValidatedFrontendVersion = "1.19.9";
+    public static string SwarmValidatedFrontendVersion = "1.23.4";
 
     public override async Task Init()
     {
@@ -389,6 +389,13 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
             await Task.WhenAll(tasks);
             AddLoadStatus($"All tasks done.");
         }
+        await DoLibFixes(doFixFrontend, doLatestFrontend);
+        AddLoadStatus("Starting self-start ComfyUI process...");
+        await NetworkBackendUtils.DoSelfStart(Settings.StartScript, this, $"ComfyUI-{BackendData.ID}", $"backend-{BackendData.ID}", Settings.GPU_ID, Settings.ExtraArgs.Trim() + " --port {PORT}" + addedArgs, InitInternal, (p, r) => { Port = p; RunningProcess = r; }, Settings.AutoRestart);
+    }
+
+    public async Task DoLibFixes(bool doFixFrontend, bool doLatestFrontend)
+    {
         string lib = NetworkBackendUtils.GetProbableLibFolderFor(Settings.StartScript);
         if (lib is null || lib.Length < 3)
         {
@@ -404,25 +411,27 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
             string[] dirs = [.. Directory.GetDirectories($"{lib}").Select(f => f.Replace('\\', '/').AfterLast('/'))];
             string[] distinfos = [.. dirs.Where(d => d.EndsWith(".dist-info"))];
             HashSet<string> libs = [.. dirs.Select(d => d.Before('-').ToLowerFast())];
+            async Task pipCall(string reason, string call)
+            {
+                AddLoadStatus($"{reason} for ComfyUI...");
+                Process p = DoPythonCall($"-s -m pip {call}");
+                NetworkBackendUtils.ReportLogsFromProcess(p, $"ComfyUI ({reason})", "");
+                await p.WaitForExitAsync(Program.GlobalProgramCancel);
+                AddLoadStatus($"Done {reason} for ComfyUI.");
+            }
             async Task install(string libFolder, string pipName)
             {
                 if (libs.Contains(libFolder))
                 {
                     return;
                 }
-                AddLoadStatus($"Installing '{pipName}' for ComfyUI...");
-                Process p = DoPythonCall($"-s -m pip install {pipName}");
-                NetworkBackendUtils.ReportLogsFromProcess(p, $"ComfyUI (Install {pipName})", "");
-                await p.WaitForExitAsync(Program.GlobalProgramCancel);
-                AddLoadStatus($"Done installing '{pipName}' for ComfyUI.");
+                await pipCall($"Installing '{pipName}'", $"install {pipName}");
+                libs.Add(libFolder);
             }
             async Task update(string name, string pip)
             {
-                AddLoadStatus($"Updating '{name}' for ComfyUI...");
-                Process p = DoPythonCall($"-s -m pip install -U {pip}");
-                NetworkBackendUtils.ReportLogsFromProcess(p, $"ComfyUI (Update {name})", "");
-                await p.WaitForExitAsync(Program.GlobalProgramCancel);
-                AddLoadStatus($"Done updating '{name}' for ComfyUI.");
+                await pipCall($"Updating '{name}'", $"install {pip}");
+                libs.Add(name);
             }
             string getVers(string package)
             {
@@ -432,7 +441,7 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
                 {
                     return null;
                 }
-                return dir[prefix.Length..].Before(".dist-info");
+                return dir[prefix.Length..].Before(".dist-info").Before('+');
             }
             if (!libs.Contains("pip"))
             {
@@ -443,14 +452,30 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
                 await install(libFolder, pipName);
             }
             string numpyVers = getVers("numpy");
-            if (numpyVers is not null && Version.Parse(numpyVers) < Version.Parse("1.25"))
+            if (numpyVers is null || Version.Parse(numpyVers) < Version.Parse("1.25"))
             {
-                await update("numpy", "numpy>=1.25.0");
+                await update("numpy", "numpy==1.26.4");
             }
-            string avVers = getVers("av");
-            if (avVers is not null && Version.Parse(avVers) < Version.Parse("14.2.0"))
+            foreach ((string libFolder, string pipName, string rel, string version) in RequiredVersionPythonPackages)
             {
-                await update("av", "av>=14.2.0");
+                string curVersRaw = getVers(libFolder);
+                Version curVers = curVersRaw is null ? null : Version.Parse(curVersRaw);
+                Version actualVers = Version.Parse(version);
+                bool doUpdate = curVers is null;
+                if (!doUpdate)
+                {
+                    doUpdate = rel switch
+                    {
+                        ">=" => curVers < actualVers,
+                        "<=" => curVers > actualVers,
+                        "==" => curVers < actualVers,
+                        _ => throw new ArgumentException($"Invalid version relation '{rel}' for package '{libFolder}' with version '{version}'.")
+                    };
+                }
+                if (doUpdate)
+                {
+                    await update(libFolder, $"{pipName}{rel}{version}");
+                }
             }
             string frontendVersion = getVers("comfyui_frontend_package");
             if (doFixFrontend && (frontendVersion is null || frontendVersion != SwarmValidatedFrontendVersion))
@@ -461,9 +486,15 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
             {
                 Logs.Warning($"(Developer Notice) ComfyUI Frontend target version is {frontVers}, but validated version is {SwarmValidatedFrontendVersion}");
             }
-            if ((doFixFrontend || doLatestFrontend) && reqs.TryGetValue("comfyui-workflow-templates", out Version templateVers))
+            string actualTemplateVers = getVers("comfyui_workflow_templates");
+            if ((doFixFrontend || doLatestFrontend) && reqs.TryGetValue("comfyui-workflow-templates", out Version templateVers) && (actualTemplateVers is null || Version.Parse(actualTemplateVers) < templateVers))
             {
                 await update("comfyui_workflow_templates", $"comfyui-workflow-templates=={templateVers}");
+            }
+            string actualEmbedVers = getVers("comfyui_embedded_docs");
+            if ((doFixFrontend || doLatestFrontend) && reqs.TryGetValue("comfyui-embedded-docs", out Version embedDocsVers) && (actualEmbedVers is null || embedDocsVers < Version.Parse(actualEmbedVers)))
+            {
+                await update("comfyui_embedded_docs", $"comfyui-embedded-docs=={embedDocsVers}");
             }
             if (doLatestFrontend)
             {
@@ -473,15 +504,10 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
             {
                 await install("comfyui_frontend_package", "comfyui-frontend-package");
             }
-            string ultralyticsVers = getVers("ultralytics");
-            if (ultralyticsVers is not null && Version.Parse(ultralyticsVers) < Version.Parse(UltralyticsVersion))
+            if (Directory.Exists($"{ComfyUIBackendExtension.Folder}/DLNodes/ComfyUI_IPAdapter_plus") || Directory.Exists($"{ComfyUIBackendExtension.Folder}/DLNodes/ComfyUI-nunchaku"))
             {
-                await update("ultralytics", $"ultralytics=={UltralyticsVersion}");
-            }
-            if (Directory.Exists($"{ComfyUIBackendExtension.Folder}/DLNodes/ComfyUI_IPAdapter_plus"))
-            {
-                // FaceID IPAdapter models need these, really inconvenient to make dependencies conditional, so...
-                await install("Cython", "cython");
+                // FaceID IPAdapter models need these, really inconvenient to make dependencies conditional, so... (nunchaku needs it too)
+                await install("cython", "cython");
                 if (File.Exists($"{lib}/../../python311.dll"))
                 {
                     // TODO: This is deeply cursed. This is published by the comfyui-ReActor-node developer so at least it's not a complete rando, but, jeesh. Insightface please fix your pip package.
@@ -506,6 +532,11 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
             }
             if (Directory.Exists($"{ComfyUIBackendExtension.Folder}/DLNodes/ComfyUI-nunchaku"))
             {
+                if (!libs.Contains("nunchaku") && numpyVers is not null && Version.Parse(numpyVers) > Version.Parse("2.0")) // Patch-hack because numpy v2 has incompatibilities with insightface
+                { // Note: sometimes 2+ is needed, so we carefully only remove for the first install of nunchaku, and allow it to be manually shifted back to 2+ after without undoing it
+                    await pipCall($"Remove numpy2+", $"uninstall -y numpy");
+                    await update("numpy", "numpy==1.26.4");
+                }
                 // Nunchaku devs seem very confused how to python package. So we gotta do some cursed install for them.
                 bool isValid = true;
                 string pyVers = "310";
@@ -532,12 +563,24 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
                     Logs.Error($"Nunchaku is not currently supported on your Torch version ({torchPipVers} not in range [2.5, 2.8]).");
                     isValid = false;
                 }
-                // eg https://github.com/mit-han-lab/nunchaku/releases/download/v0.2.0/nunchaku-0.2.0+torch2.5-cp310-cp310-linux_x86_64.whl
-                string url = $"https://github.com/mit-han-lab/nunchaku/releases/download/v0.2.0/nunchaku-0.2.0+torch{torchVers}-cp{pyVers}-cp{pyVers}-{osVers}.whl";
+                // eg https://github.com/mit-han-lab/nunchaku/releases/download/v0.3.1/nunchaku-0.3.1+torch2.5-cp310-cp310-linux_x86_64.whl
+                string url = $"https://github.com/mit-han-lab/nunchaku/releases/download/v0.3.1/nunchaku-0.3.1+torch{torchVers}-cp{pyVers}-cp{pyVers}-{osVers}.whl";
                 if (isValid)
                 {
-                    await install("nunchaku", url);
+                    string nunchakuVers = getVers("nunchaku");
+                    if (nunchakuVers is not null && Version.Parse(nunchakuVers) < Version.Parse("0.3.1"))
+                    {
+                        await update("nunchaku", url);
+                    }
+                    else
+                    {
+                        await install("nunchaku", url);
+                    }
                 }
+                // Late-added requirements of nunchaku
+                await install("filterpy", "git+https://github.com/rodjjo/filterpy.git"); // compile dependency, utterly broken, I hate python developers omg
+                await install("facexlib", "facexlib");
+                await install("timm", "timm");
             }
             foreach (string req in reqs.Keys)
             {
@@ -548,18 +591,10 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
             }
             AddLoadStatus("Done validating required libs.");
         }
-        AddLoadStatus("Starting self-start ComfyUI process...");
-        await NetworkBackendUtils.DoSelfStart(Settings.StartScript, this, $"ComfyUI-{BackendData.ID}", $"backend-{BackendData.ID}", Settings.GPU_ID, Settings.ExtraArgs.Trim() + " --port {PORT}" + addedArgs, InitInternal, (p, r) => { Port = p; RunningProcess = r; }, Settings.AutoRestart);
     }
 
     /// <summary>Strict matcher that will block any muckery, excluding URLs and etc.</summary>
     public static AsciiMatcher RequirementPartMatcher = new(AsciiMatcher.BothCaseLetters + AsciiMatcher.Digits + ".-_");
-
-    /// <summary>
-    /// Version of Ultralytics pip package to use.
-    /// This is hard-pinned due to the malicious 8.3.41 incident, only manual updates when needed until security practices are improved.
-    /// </summary>
-    public static string UltralyticsVersion = "8.3.123";
 
     /// <summary>List of known required python packages, as pairs of strings: Item1 is the folder name within python packages to look for, Item2 is the pip install command.</summary>
     public static List<(string, string)> RequiredPythonPackages =
@@ -570,7 +605,9 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
         ("spandrel", "spandrel"),
         ("av", "av"),
         ("pydantic", "pydantic"),
+        ("pydantic_settings", "pydantic-settings"),
         ("comfyui_frontend_package", $"comfyui_frontend_package=={SwarmValidatedFrontendVersion}"),
+        ("alembic", "alembic"),
         // Other added dependencies
         ("rembg", "rembg"),
         ("onnxruntime", "onnxruntime"), // subdependency of rembg but inexplicably not autoinstalled anymore?
@@ -578,8 +615,18 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
         ("opencv_python_headless", "opencv-python-headless"),
         ("imageio_ffmpeg", "imageio-ffmpeg"),
         ("dill", "dill"),
-        ("ultralytics", $"ultralytics=={UltralyticsVersion}"),
-        ("omegaconf", "omegaconf") // some yolo models require this but ultralytics itself doesn't? wut?
+        ("omegaconf", "omegaconf"), // some yolo models require this but ultralytics itself doesn't? wut?
+        //("mesonpy", "meson-python") // Build requirement sometimes. Probably will be required when python 3.13 is stably supported.
+    ];
+
+    /// <summary>List of required python packages that need a specific version, in structure (string libFolder, string pipName, string rel, string version).</summary>
+    public static List<(string, string, string, string)> RequiredVersionPythonPackages =
+    [
+        ("av", "av", ">=", "14.2.0"),
+        ("spandrel", "spandrel", ">=", "0.4.1"),
+        ("transformers", "transformers", ">=", "4.37.2"),
+        ("ultralytics", "ultralytics", "==", "8.3.155"), // This is hard-pinned due to the malicious 8.3.41 incident, only manual updates when needed until security practices are improved.
+        ("pip", "pip", ">=", "25.0") // Don't need latest, just can't be too old, this is mostly just here for a sanity check.
     ];
 
     public override async Task Shutdown()

@@ -245,6 +245,7 @@ function genToolsList() {
         }
         let tool = toolSelector.value;
         if (tool == '') {
+            getRequiredElementById('clear_selected_tool_button').style.display = 'none';
             return;
         }
         let div = getRequiredElementById(`tool_${tool}`);
@@ -258,6 +259,7 @@ function genToolsList() {
             }
         }
         div.dispatchEvent(new Event('tool-opened'));
+        getRequiredElementById('clear_selected_tool_button').style.display = '';
     });
 }
 
@@ -274,6 +276,10 @@ function registerNewTool(id, name, genOverride = null, runOverride = null) {
         toolOverrides[id] = { 'text': genOverride, 'run': runOverride };
     }
     return div;
+}
+function disableSelectedTool() {
+    toolSelector.value = '';
+    triggerChangeFor(toolSelector);
 }
 
 let notePadTool = registerNewTool('note_pad', 'Text Notepad');
@@ -354,10 +360,10 @@ function loadUserData(callback) {
         else {
             autoCompletionsList = null;
         }
-        allPresets = data.presets;
         if (!language) {
             language = data.language;
         }
+        allPresetsUnsorted = data.presets;
         sortPresets();
         presetBrowser.update();
         if (shouldApplyDefault) {
@@ -771,5 +777,3 @@ function genpageLoad() {
         window.resLoopInterval = setInterval(serverResourceLoop, 1000);
     });
 }
-
-setTimeout(genpageLoad, 1);

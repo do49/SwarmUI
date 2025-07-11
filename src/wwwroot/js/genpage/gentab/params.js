@@ -6,6 +6,14 @@ let refreshParamsExtra = [];
 /** Set 'id': true to indicate that advanced status should be overridden for a group, ie it should be visible even when Display Advanced is unchecked. */
 let groupAdvancedOverrides = {};
 
+// TODO: Temporary (v0.9.6) legacy cookie cleanup
+for (let cookie of listCookies('group_toggle_auto-group-')) {
+    deleteCookie(cookie);
+}
+for (let cookie of listCookies('group_open_auto-group-')) {
+    deleteCookie(cookie);
+}
+
 function setGroupAdvancedOverride(groupId, enable) {
     if (groupAdvancedOverrides[groupId] && !enable) {
         delete groupAdvancedOverrides[groupId];
@@ -26,8 +34,8 @@ class AspectRatio {
         this.altLogic = altLogic;
     }
 
-    read(inWidth, inHeight) {
-        if (this.altLogic) {
+    read(inWidth, inHeight, doAltLogic = true) {
+        if (this.altLogic && doAltLogic) {
             let [newWidth, newHeight] = this.altLogic(inWidth, inHeight);
             if (newWidth && newHeight) {
                 return [newWidth, newHeight];
@@ -37,6 +45,7 @@ class AspectRatio {
             inWidth = roundTo(Math.sqrt(inWidth * inHeight), 16);
             inHeight = inWidth;
         }
+        // NOTE: This math must match T2IParamInput GetImageWidth
         let width = roundTo(this.width * (inWidth <= 0 ? 512 : inWidth) / 512, 16);
         let height = roundTo(this.height * (inHeight <= 0 ? 512 : inHeight) / 512, 16);
         return [width, height];
@@ -183,6 +192,7 @@ function doGroupOpenUpdate(group, parent, isOpen) {
     parent.classList.remove('input-group-closed');
     parent.classList.remove('input-group-open');
     let symbol = parent.querySelector('.auto-symbol');
+    let groupId = parent.id.substring('auto-group-'.length);
     if (isOpen || header.classList.contains('input-group-noshrink')) {
         group.style.display = 'flex';
         parent.classList.add('input-group-open');
@@ -190,7 +200,7 @@ function doGroupOpenUpdate(group, parent, isOpen) {
             symbol.innerHTML = '&#x2B9F;';
         }
         if (!group.dataset.do_not_save) {
-            setCookie(`group_open_${parent.id}`, 'open', getParamMemoryDays());
+            setCookie(`group_open_${groupId}`, 'open', getParamMemoryDays());
         }
     }
     else {
@@ -200,7 +210,7 @@ function doGroupOpenUpdate(group, parent, isOpen) {
             symbol.innerHTML = '&#x2B9E;';
         }
         if (!group.dataset.do_not_save) {
-            setCookie(`group_open_${parent.id}`, 'closed', getParamMemoryDays());
+            setCookie(`group_open_${groupId}`, 'closed', getParamMemoryDays());
         }
     }
     scheduleParamUnsupportUpdate();
@@ -219,8 +229,9 @@ function doToggleGroup(id) {
         header.classList.remove('input-group-header-activated');
         group.classList.remove('input-group-content-activated');
     }
+    let groupId = parent.id.substring('auto-group-'.length);
     if (!group.dataset.do_not_save) {
-        setCookie(`group_toggle_${parent.id}`, elem.checked ? 'yes' : 'no', getParamMemoryDays());
+        setCookie(`group_toggle_${groupId}`, elem.checked ? 'yes' : 'no', getParamMemoryDays());
     }
     doGroupOpenUpdate(group, parent, group.style.display != 'none');
 }
@@ -264,14 +275,14 @@ function autoRepersistParams() {
         }
         if (param.group && !groups.includes(param.group.id)) {
             groups.push(param.group.id);
-            let open = getCookie(`group_open_auto-group-${param.group.id}`);
+            let open = getCookie(`group_open_${param.group.id}`);
             if (open) {
-                setCookie(`group_open_auto-group-${param.group.id}`, open, days);
+                setCookie(`group_open_${param.group.id}`, open, days);
             }
             if (param.group.toggles) {
-                let toggle = getCookie(`group_toggle_auto-group-${param.group.id}`);
+                let toggle = getCookie(`group_toggle_${param.group.id}`);
                 if (toggle) {
-                    setCookie(`group_toggle_auto-group-${param.group.id}`, toggle, days);
+                    setCookie(`group_toggle_${param.group.id}`, toggle, days);
                 }
             }
         }
@@ -322,12 +333,12 @@ function genInputs(delay_final = false) {
                     html += `<div class="sui-popover sui-info-popover" id="popover_group_${groupId}"><b>${translateableHtml(escapeHtml(group.name))}</b>:<br>&emsp;${translateableHtml(safeHtmlOnly(group.description))}</div>`;
                     infoButton = `<span class="auto-input-qbutton info-popover-button" onclick="doPopover('group_${groupId}', arguments[0])">?</span>`;
                 }
-                let shouldOpen = getCookie(`group_open_auto-group-${groupId}`) || (group.open ? 'open' : 'closed');
+                let shouldOpen = getCookie(`group_open_${groupId}`) || (group.open ? 'open' : 'closed');
                 if (shouldOpen == 'closed') {
                     groupsClose.push(groupId);
                 }
                 if (group.toggles) {
-                    let shouldToggle = getCookie(`group_toggle_auto-group-${groupId}`) || 'no';
+                    let shouldToggle = getCookie(`group_toggle_${groupId}`) || 'no';
                     if (shouldToggle == 'yes') {
                         groupsEnable.push(groupId);
                     }
@@ -426,11 +437,15 @@ function genInputs(delay_final = false) {
         let inputAspectRatio = document.getElementById('input_aspectratio');
         let inputWidth = document.getElementById('input_width');
         let inputHeight = document.getElementById('input_height');
-        if (inputAspectRatio && inputWidth && inputHeight) {
+        let inputSideLength = document.getElementById('input_sidelength');
+        if (inputAspectRatio && inputWidth && inputHeight && inputSideLength) {
             let inputWidthParent = findParentOfClass(inputWidth, 'auto-slider-box');
             let inputWidthSlider = getRequiredElementById('input_width_rangeslider');
             let inputHeightParent = findParentOfClass(inputHeight, 'auto-slider-box');
             let inputHeightSlider = getRequiredElementById('input_height_rangeslider');
+            let inputSideLengthParent = findParentOfClass(inputSideLength, 'auto-slider-box');
+            let inputSideLengthSlider = getRequiredElementById('input_sidelength_rangeslider');
+            let inputSideLengthToggle = getRequiredElementById('input_sidelength_toggle');
             let resGroupLabel = findParentOfClass(inputWidth, 'input-group').querySelector('.header-label');
             let inputAspectRatioParent = findParentOfClass(inputAspectRatio, 'auto-dropdown-box');
             let inputAspectRatioParentStyles = window.getComputedStyle(inputAspectRatioParent);
@@ -451,6 +466,8 @@ function genInputs(delay_final = false) {
                     swapAspectRatioButton.style.display = 'block';
                     delete inputWidthParent.dataset.visible_controlled;
                     delete inputHeightParent.dataset.visible_controlled;
+                    inputSideLengthParent.style.display = 'none';
+                    inputSideLengthParent.dataset.visible_controlled = 'true';
                     aspect = describeAspectRatio(inputWidth.value, inputHeight.value);
                 }
                 else {
@@ -459,6 +476,8 @@ function genInputs(delay_final = false) {
                     swapAspectRatioButton.style.display = 'none';
                     inputWidthParent.dataset.visible_controlled = 'true';
                     inputHeightParent.dataset.visible_controlled = 'true';
+                    inputSideLengthParent.style.display = 'block';
+                    delete inputSideLengthParent.dataset.visible_controlled;
                     aspect = inputAspectRatio.value;
                 }
                 resGroupLabel.innerText = `${translate('Resolution')}: ${aspect} (${inputWidth.value}x${inputHeight.value})`;
@@ -469,10 +488,18 @@ function genInputs(delay_final = false) {
             inputAspectRatio.addEventListener('change', () => {
                 if (inputAspectRatio.value != "Custom") {
                     let aspectRatio = inputAspectRatio.value;
+                    let targetWidth = curModelWidth;
+                    let targetHeight = curModelHeight;
+                    let doAltLogic = true;
+                    if (inputSideLength.value && inputSideLengthToggle.checked) {
+                        targetWidth = inputSideLength.value;
+                        targetHeight = inputSideLength.value;
+                        doAltLogic = false;
+                    }
                     let width, height;
                     for (let ratio of aspectRatios) {
                         if (ratio.id == aspectRatio) {
-                            [width, height] = ratio.read(curModelWidth, curModelHeight);
+                            [width, height] = ratio.read(targetWidth, targetHeight, doAltLogic);
                             break;
                         }
                     }
@@ -483,6 +510,11 @@ function genInputs(delay_final = false) {
                 }
                 resTrick();
             });
+            for (let target of [inputSideLength, inputSideLengthSlider, inputSideLengthToggle]) {
+                target.addEventListener('change', () => {
+                    triggerChangeFor(inputAspectRatio);
+                });
+            }
             swapAspectRatioButton.addEventListener('click', (event) => {
                 event.preventDefault();
                 let tmpWidth = inputWidth.value;
@@ -693,7 +725,7 @@ function genInputs(delay_final = false) {
                 });
             }
             if (!param.do_not_save) {
-                elem.addEventListener('change', () => {
+                function getParamValue(param, elem) {
                     let val = null;
                     if (param.type == "boolean") {
                         val = elem.checked;
@@ -705,6 +737,10 @@ function genInputs(delay_final = false) {
                     else if (param.type != "image") {
                         val = elem.value;
                     }
+                    return val;
+                }
+                elem.addEventListener('change', () => {
+                    let val = getParamValue(param, elem);
                     if (val !== null) {
                         if (val == param.default) {
                             deleteCookie(`lastparam_input_${param.id}`);
@@ -714,23 +750,28 @@ function genInputs(delay_final = false) {
                         }
                     }
                 });
-            }
-            if (param.toggleable) {
-                let toggler = getRequiredElementById(`input_${param.id}_toggle`);
-                let cookie = getCookie(`lastparam_input_${param.id}_toggle`);
-                if (cookie) {
-                    toggler.checked = cookie == "true";
-                }
-                doToggleEnable(`input_${param.id}`);
-                if (!param.do_not_save) {
-                    toggler.addEventListener('change', () => {
-                        if (!toggler.checked) {
-                            deleteCookie(`lastparam_input_${param.id}`);
-                        }
-                        else {
-                            setCookie(`lastparam_input_${param.id}_toggle`, toggler.checked, getParamMemoryDays());
-                        }
-                    });
+                if (param.toggleable) {
+                    let toggler = getRequiredElementById(`input_${param.id}_toggle`);
+                    let cookie = getCookie(`lastparam_input_${param.id}_toggle`);
+                    if (cookie) {
+                        toggler.checked = cookie == "true";
+                    }
+                    doToggleEnable(`input_${param.id}`);
+                    if (!param.do_not_save) {
+                        toggler.addEventListener('change', () => {
+                            if (!toggler.checked) {
+                                deleteCookie(`lastparam_input_${param.id}`);
+                                deleteCookie(`lastparam_input_${param.id}_toggle`);
+                            }
+                            else {
+                                setCookie(`lastparam_input_${param.id}_toggle`, toggler.checked, getParamMemoryDays());
+                                let val = getParamValue(param, elem);
+                                if (val !== null && val != param.default) {
+                                    setCookie(`lastparam_input_${param.id}`, val, getParamMemoryDays());
+                                }
+                            }
+                        });
+                    }
                 }
             }
         }
@@ -849,6 +890,15 @@ function getGenInput(input_overrides = {}, input_preoverrides = {}) {
             }
         }
     }
+    for (let type of gen_param_types) {
+        if (type.depend_non_default) {
+            let otherParam = gen_param_types.find(p => p.id == type.depend_non_default);
+            let otherElem = document.getElementById(`input_${otherParam.id}`);
+            if (otherParam && otherElem && !otherElem.dataset.has_data && !(otherParam.id in input_overrides) && (!(otherParam.id in input) || input[otherParam.id] == otherParam.default)) {
+                delete input[type.id];
+            }
+        }
+    }
     if (!input['vae'] || input['vae'] == 'Automatic') {
         input['automaticvae'] = true;
         delete input['vae'];
@@ -922,6 +972,12 @@ function refreshParameterValues(strong = true, callback = null) {
                 }
                 if ((param.type == "dropdown" || param.type == "model") && values) {
                     let val = elem.value;
+                    let triggerChange = false;
+                    if (elem.dataset.wantsValue && values.includes(elem.dataset.wantsValue)) {
+                        val = elem.dataset.wantsValue;
+                        triggerChange = true;
+                        delete elem.dataset.wantsValue;
+                    }
                     let html = '';
                     let alt_names = param['value_names'];
                     for (let i = 0; i < values.length; i++) {
@@ -934,6 +990,9 @@ function refreshParameterValues(strong = true, callback = null) {
                     elem.innerHTML = html;
                     elem.value = val;
                     presetElem.innerHTML = html;
+                    if (triggerChange) {
+                        triggerChangeFor(elem);
+                    }
                 }
                 else if (param.type == "list" && values) {
                     let listOpts = [...elem.options].map(o => o.value);
@@ -975,6 +1034,7 @@ function setDirectParamValue(param, value, paramElem = null, forceDropdowns = fa
     else if (paramElem.tagName == "SELECT") {
         if (![...paramElem.querySelectorAll('option')].map(o => o.value).includes(value)) {
             if (!forceDropdowns) {
+                paramElem.dataset.wantsValue = value;
                 return;
             }
             paramElem.add(new Option(`${value} (Invalid)`, value, false, false));
@@ -999,11 +1059,16 @@ function setDirectParamValue(param, value, paramElem = null, forceDropdowns = fa
     }
 }
 
-function resetParamsToDefault(exclude = []) {
+function resetParamsToDefault(exclude = [], doDefaultPreset = true) {
     for (let cookie of listCookies('lastparam_')) {
-        deleteCookie(cookie);
+        if (!exclude.includes(cookie.substring('lastparam_'.length))) {
+            deleteCookie(cookie);
+        }
     }
     for (let cookie of listCookies('group_toggle_')) {
+        deleteCookie(cookie);
+    }
+    for (let cookie of listCookies('group_open_')) {
         deleteCookie(cookie);
     }
     localStorage.removeItem('last_comfy_workflow_input');
@@ -1042,11 +1107,6 @@ function resetParamsToDefault(exclude = []) {
             }
         }
     }
-    for (let param of gen_param_types) {
-        let id = `input_${param.id}`;
-        if (param.id != 'model' && !exclude.includes(param.id) && document.getElementById(id) != null) {
-        }
-    }
     let aspect = document.getElementById('input_aspectratio');
     if (aspect) { // Fix resolution trick incase the reset broke it
         triggerChangeFor(aspect);
@@ -1054,7 +1114,7 @@ function resetParamsToDefault(exclude = []) {
     currentModelChanged();
     clearPresets();
     let defaultPreset = getPresetByTitle('default');
-    if (defaultPreset) {
+    if (defaultPreset && doDefaultPreset) {
         applyOnePreset(defaultPreset);
     }
     hideUnsupportableParams();
@@ -1139,6 +1199,27 @@ function hideUnsupportableParams() {
             }
             if (!filterShow) {
                 show = false;
+            }
+            if (param.depend_non_default) {
+                let otherParam = gen_param_types.find(p => p.id == param.depend_non_default);
+                let other = document.getElementById(`input_${param.depend_non_default}`);
+                if (other && !other.dataset.has_data) {
+                    if (getInputVal(other) == otherParam.default) {
+                        show = false;
+                    }
+                    else {
+                        let otherToggler = document.getElementById(`input_${otherParam.id}_toggle`);
+                        if (otherToggler && !otherToggler.checked) {
+                            show = false;
+                        }
+                        else {
+                            let otherGroup = otherParam.original_group || otherParam.group;
+                            if (otherGroup && otherGroup.toggles && !getRequiredElementById(`input_group_content_${otherGroup.id}_toggle`).checked) {
+                                show = false;
+                            }
+                        }
+                    }
+                }
             }
             if (param.advanced && supported && filterShow) {
                 advancedCount++;
@@ -1347,4 +1428,22 @@ function getParamById(id) {
         param = rawGenParamTypesFromServer.find(p => p.id == id);
     }
     return param;
+}
+
+/** Adds a button to the given group to install a feature. */
+function addInstallButton(groupId, featureId, installId, buttonText) {
+    postParamBuildSteps.push(() => {
+        let targetGroup = document.getElementById(`input_group_content_${groupId}`);
+        if (targetGroup && !currentBackendFeatureSet.includes(featureId)) {
+            targetGroup.append(createDiv(`${groupId}_${installId}_install_button`, 'keep_group_visible', `<button class="basic-button" onclick="installFeatureById('${installId}', '${groupId}_${installId}_install_button')">${buttonText}</button>`));
+        }
+    });
+    hideParamCallbacks.push(() => {
+        if (currentBackendFeatureSet.includes(featureId)) {
+            let installButton = document.getElementById(`${groupId}_${installId}_install_button`);
+            if (installButton) {
+                installButton.remove();
+            }
+        }
+    });
 }
