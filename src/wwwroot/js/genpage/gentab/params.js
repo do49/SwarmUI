@@ -574,16 +574,16 @@ function genInputs(delay_final = false) {
             });
             tweakNegativePromptBox();
         }
-        let inputLoras = document.getElementById('input_loras');
-        if (inputLoras) {
-            inputLoras.addEventListener('change', () => {
-                updateLoraList();
-                sdLoraBrowser.rebuildSelectedClasses();
-            });
-        }
-        let inputLoraWeights = document.getElementById('input_loraweights');
-        if (inputLoraWeights) {
-            inputLoraWeights.addEventListener('change', reapplyLoraWeights);
+        for (let loraParam of ['loras', 'loraweights', 'lorasectionconfinement']) {
+            let input = document.getElementById(`input_${loraParam}`);
+            if (input) {
+                input.addEventListener('change', () => {
+                    loraHelper.loadFromParams();
+                    if (loraParam == 'loras') {
+                        sdLoraBrowser.rebuildSelectedClasses();
+                    }
+                });
+            }
         }
         let inputBatchSize = document.getElementById('input_batchsize');
         let shouldResetBatch = getUserSetting('resetbatchsizetoone', false);
@@ -818,7 +818,7 @@ function genInputs(delay_final = false) {
         hideUnsupportableParams();
         let loras = document.getElementById('input_loras');
         if (loras) {
-            reapplyLoraWeights();
+            loraHelper.loadFromParams();
         }
         if (imageEditor.active) {
             imageEditor.doParamHides();
@@ -854,7 +854,7 @@ function toggle_advanced_checkbox_manual() {
 function getGenInput(input_overrides = {}, input_preoverrides = {}) {
     let input = JSON.parse(JSON.stringify(input_preoverrides));
     let extraMetadata = {};
-    for (let type of gen_param_types) {
+    paramLoop: for (let type of gen_param_types) {
         if (type.toggleable && !getRequiredElementById(`input_${type.id}_toggle`).checked) {
             continue;
         }
@@ -862,8 +862,11 @@ function getGenInput(input_overrides = {}, input_preoverrides = {}) {
             continue;
         }
         let group = type.original_group || type.group;
-        if (group && group.toggles && !getRequiredElementById(`input_group_content_${group.id}_toggle`).checked) {
-            continue;
+        while (group) {
+            if (group.toggles && !getRequiredElementById(`input_group_content_${group.id}_toggle`).checked) {
+                continue paramLoop;
+            }
+            group = group.parent;
         }
         let elem = getRequiredElementById(`input_${type.id}`);
         let parent = findParentOfClass(elem, 'auto-input');
@@ -1204,20 +1207,12 @@ function hideUnsupportableParams() {
                 let otherParam = gen_param_types.find(p => p.id == param.depend_non_default);
                 let other = document.getElementById(`input_${param.depend_non_default}`);
                 if (other && !other.dataset.has_data) {
-                    if (getInputVal(other) == otherParam.default) {
+                    let otherToggler = document.getElementById(`input_${otherParam.id}_toggle`);
+                    if (otherToggler && !otherToggler.checked) {
                         show = false;
                     }
-                    else {
-                        let otherToggler = document.getElementById(`input_${otherParam.id}_toggle`);
-                        if (otherToggler && !otherToggler.checked) {
-                            show = false;
-                        }
-                        else {
-                            let otherGroup = otherParam.original_group || otherParam.group;
-                            if (otherGroup && otherGroup.toggles && !getRequiredElementById(`input_group_content_${otherGroup.id}_toggle`).checked) {
-                                show = false;
-                            }
-                        }
+                    if (!otherToggler && getInputVal(other) == otherParam.default) {
+                        show = false;
                     }
                 }
             }
@@ -1228,15 +1223,17 @@ function hideUnsupportableParams() {
                 box.style.display = show ? '' : 'none';
             }
             box.dataset.disabled = supported ? 'false' : 'true';
-            if (param.group) {
-                let groupData = groups[param.group.id] || { visible: 0, data: param.group, altered: 0 };
-                groups[param.group.id] = groupData;
+            group = param.group;
+            while (group) {
+                let groupData = groups[group.id] || { visible: 0, data: group, altered: 0 };
+                groups[group.id] = groupData;
                 if (show) {
                     groupData.visible++;
                     if (isAltered) {
                         groupData.altered++;
                     }
                 }
+                group = group.parent;
             }
         }
     }

@@ -282,7 +282,14 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             if (promptResult.ContainsKey("error"))
             {
                 Logs.Debug($"Error came from prompt: {JObject.Parse(workflow).ToDenseDebugString(noSpacing: true)}");
-                throw new SwarmReadableErrorException($"ComfyUI errored: {promptResult}");
+                string encoded = promptResult.ToString(Formatting.Indented);
+                string prefix = "";
+                // TODO: Temp: July 2025 comfy breaking change
+                if (encoded.Contains("\"type\": \"prompt_outputs_failed_validation\"") && encoded.Contains("validate_inputs()") && encoded.Contains("positional argument"))
+                {
+                    prefix = "\nThis error looks like an outdated ComfyUI installation. Go to Server, then Backends, then edit your Comfy backend, and change AutoUpdate to enabled if it was not, or to Forced if it was already enabled.\n";
+                }
+                throw new SwarmReadableErrorException($"ComfyUI errored: {prefix}{encoded}");
             }
             string promptId = $"{promptResult["prompt_id"]}";
             long firstStep = 0;
@@ -956,6 +963,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             copyParam(T2IParamTypes.T5XXLModel);
             copyParam(T2IParamTypes.LLaVAModel);
             copyParam(T2IParamTypes.LLaMAModel);
+            copyParam(T2IParamTypes.QwenModel);
         }
         WorkflowGenerator wg = new() { UserInput = input, ModelFolderFormat = ModelFolderFormat, Features = [.. SupportedFeatures] };
         JObject workflow = wg.Generate();

@@ -7,18 +7,19 @@
 [Stable Diffusion XL](#stable-diffusion-xl) | unet | 2023 | Stability AI | 2B | Partial | Older but some finetunes are worth using |
 [SD1 and SDXL Turbo Variants](#sd1-and-sdxl-turbo-variants) | unet | 2023 | Stability AI and others | 2B | Partial | Outdated |
 [Stable Diffusion 3](#stable-diffusion-3) | MMDiT | 2024 | Stability AI | 2B | Yes | Outdated, prefer 3.5 |
-[Stable Diffusion 3.5 Large](#stable-diffusion-35-large) | MMDiT | 2024 | Stability AI | 8B | Partial | Modern, High Quality |
+[Stable Diffusion 3.5 Large](#stable-diffusion-35-large) | MMDiT | 2024 | Stability AI | 8B | Partial | Modern, Good Quality |
 [Stable Diffusion 3.5 Medium](#stable-diffusion-35-medium) | MMDiT | 2024 | Stability AI | 2B | Partial | Modern, Good Quality |
 [Segmind SSD 1B](#segmind-ssd-1b) | unet | 2023 | Segmind | 1B | Partial | Outdated |
 [Stable Cascade](#stable-cascade) | unet cascade | 2024 | Stability AI | 5B | Partial | Outdated |
 [PixArt Sigma](#pixart-sigma) | DiT | 2024 | PixArt | 1B | ? | Outdated |
-[Nvidia Sana](#nvidia-sana) | DiT | 2024 | NVIDIA | 1.6B | No | Modern, Low Quality |
+[Nvidia Sana](#nvidia-sana) | DiT | 2024 | NVIDIA | 1.6B | No | Just Bad |
 [AuraFlow](#auraflow) | MMDiT | 2024 | Fal.AI | 6B | Yes | Outdated |
 [Flux.1](#black-forest-labs-flux1-models) | MMDiT | 2024 | Black Forest Labs | 12B | Partial | Modern, High Quality |
-[Lumina 2.0](#lumina-2) | NextDiT | 2025 | Alpha-VLLM | 2.6B | Partial | Modern, Decent Quality |
+[Lumina 2.0](#lumina-2) | NextDiT | 2025 | Alpha-VLLM | 2.6B | Partial | Modern, Passable Quality |
 [HiDream i1](#hidream-i1) | MMDiT | 2025 | HiDream AI (Vivago) | 17B | Minimal | Modern, High Quality, very memory intense |
 [Nvidia Cosmos Predict2](#cosmos-predict2) | DiT | 2025 | NVIDIA | 2B/14B | Partial | Modern but bad |
 [OmniGen 2](#omnigen-2) | MLLM | 2025 | VectorSpaceLab | 7B | No | Modern, Decent Quality |
+[Qwen Image](#qwen-image) | MMDiT | 2025 | Alibaba-Qwen | 20B | Minimal | Modern, Great Quality, very memory intense |
 
 - **Architecture** is the fundamental machine learning structure used for the model, UNet's were used in the past but DiT (Diffusion Transformers) are the modern choice
 - **Scale** is how big the model is - "B" for "Billion", so for example "2B" means "Two billion parameters".
@@ -282,14 +283,15 @@ Parameters and usage is the same as any other normal model.
     - Boosting the `Flux Guidance Scale` way up to eg `30` may improve quality
 - For "**Kontext**" (edit model), it works like other edit models.
     - Model download here <https://huggingface.co/Comfy-Org/flux1-kontext-dev_ComfyUI/blob/main/split_files/diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors>
-    - Or the official BFL 16 bit upload <https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev>
-    - Or some GGUFs here <https://huggingface.co/QuantStack/FLUX.1-Kontext-dev-GGUF/tree/main>
+        - Or the nunchaku version here <https://huggingface.co/mit-han-lab/nunchaku-flux.1-kontext-dev/tree/main>
+        - Or the official BFL 16 bit upload <https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev>
+        - Or some GGUFs here <https://huggingface.co/QuantStack/FLUX.1-Kontext-dev-GGUF/tree/main>
     - It's a regular model file, it goes in the regular `diffusion_models` folder same as other flux models.
     - You will have to manually edit the architecture to be `Flux.1 Kontext Dev`, it misdetects by default
+        - Click the `☰` hamburger menu on the model, then `Edit Metadata`, then select the `Architecture` as `Flux.1 Kontext Dev`, then hit save
     - Paste images into the prompt box to serve as the reference images it will use to generate.
         - If you have an init image and no reference images, the init image will be used.
-        - Be aware that the first image used will be the resolution control of the input. You will want to keep the image between 1024 and 2048 pixels wide.
-            - (If the image is significantly out of scale range, eg 512x512, it will be automatically rescaled for you)
+        - Swarm will automatically keep the size of the image correct for Kontext input, but make sure your aspect ratio is matched.
     - Kontext can take as many images as you want, but the way this works on the inside is a bit hacky and limited quality.
     - Prompt should describe a *change* to make to the image.
     - BFL published an official prompting guide here, following it carefully is recommended: <https://docs.bfl.ai/guides/prompting_guide_kontext_i2i>
@@ -403,7 +405,7 @@ Parameters and usage is the same as any other normal model.
     - It is technically an LLM, and the LLM features are not supported, only the direct raw image features.
     - Download the model here <https://huggingface.co/Comfy-Org/Omnigen2_ComfyUI_repackaged/blob/main/split_files/diffusion_models/omnigen2_fp16.safetensors>
         - Save it to `diffusion_models`
-    - The text encoder is Qwen 2.5 VL (LLM), and will be automatically downloaded.
+    - The text encoder is Qwen 2.5 VL 3B (LLM), and will be automatically downloaded.
     - The VAE is the Flux VAE, and will be automatically downloaded.
     - Add images to the prompt box to use them as input images for the model. If no input images are given, but you have an Init Image, that will be used as the input image.
     - **CFG:** Usual CFG rules, around 5 to 7 is a good baseline
@@ -413,9 +415,69 @@ Parameters and usage is the same as any other normal model.
     - **Performance:** Pretty terribly slow. Incompatible with fp8, incompatible with sage attention.
     - **Prompts:** their demo page has some prompt tips and examples <https://huggingface.co/spaces/OmniGen2/OmniGen2>
 
+# Qwen Image
+
+![img](/docs/images/models/qwen-image.jpg)
+*(Qwen Image ran at CFG=4, Steps=50, Res=1328x1328. This took me about 3 minutes per image. This comparison is unfair to the other models, but this model seems intended to be a 'slow but smart' model, so this is the way to run it for now. The test prompt seems to be particular hard on Qwen Image, I promise it's smarter than this makes it look lol.)*
+
+- [Qwen Image](https://huggingface.co/Qwen/Qwen-Image) is natively supported in SwarmUI.
+    - Download the model here <https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/tree/main/split_files/diffusion_models>
+        - There's an fp8 and a bf16 variant available. The fp8 model is highly recommended.
+        - Or, for nunchaku accelerated version that uses a bit less VRAM and runs faster, <https://huggingface.co/nunchaku-tech/nunchaku-qwen-image/tree/main>
+        - Or, other option for limited memory space, GGUF versions <https://huggingface.co/city96/Qwen-Image-gguf/tree/main>
+        - Or a distilled version here <https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/blob/main/non_official/diffusion_models/qwen_image_distill_full_fp8_e4m3fn.safetensors>
+            - This uses CFG=1, Steps=15 or so.
+            - There's also a couple "Lightning" loras <https://huggingface.co/lightx2v/Qwen-Image-Lightning/tree/main> for the base model, CFG=1 Steps=8 or 4
+        - Save it to `diffusion_models`
+    - The text encoder is Qwen 2.5 VL 7B (LLM), and will be automatically downloaded.
+    - It has its own VAE, and will be automatically downloaded.
+    - SageAttention has compatibility issues, if you use Sage it will need to be disabled.
+    - **CFG:** You can use CFG=`1` for best performance. You can also happily use higher CFGs, eg CFG=`4`, at a performance cost.
+    - **Steps:** normal ~20 works, but higher steps (eg 50) is recommended for best quality
+    - **Resolution:** 1328x1328 is their recommended resolution, but you can shift it around to other resolutions in a range between 928 up to 1472.
+    - **Performance:** Can be fast on Res=928x928 CFG=1 Steps=20, but standard params are very slow (one full minute for a standard res 20 step cfg 4 image on a 4090, compared to ~10 seconds for Flux on the same).
+        - Requires >30 gigs of system RAM just to load at all in fp8. If you have limited sysram you're gonna have a bad time. Pagefile can help.
+    - **Prompts:** TBD, but it seems very friendly to general prompts in both natural language and booru-tag styles
+    - **Sigma Shift:** Comfy defaults it to `1.15`, but this ruins fine details, so Swarm defaults it to `3` instead. Many different values are potentially valid. Proper guidance on choices TBD.
+
+### Controlnets
+
+- There are three controlnet versions available for Qwen Image currently
+    - Regular form
+        - There's a regular controlnet-union available here <https://huggingface.co/InstantX/Qwen-Image-ControlNet-Union/blob/main/diffusion_pytorch_model.safetensors>
+        - works like any other controlnet. Select as controlnet model, give it an image, select a preprocessor. Probably lower the strength a bit.
+        - Compatible with lightning loras.
+        - If not using Lightning, probably raise your CFG a bit to ensure your prompt is stronger than the controlnet.
+    - "Model Patch"
+        - Support pending
+    - LoRA form
+        - Download here <https://huggingface.co/Comfy-Org/Qwen-Image-DiffSynth-ControlNets/tree/main/split_files/loras>
+        - Save to loras folder
+        - Select the lora, use with a regular qwen image base model
+        - Upload a prompt image of controlnet input (depth or canny)
+            - You can create this from an existing image by using the Controlnet Parameter group, select the preprocessor (Canny, or MiDAS Depth), and hit "Preview"
+        - You cannot use the controlnet parameters directly for actual generation due to the weird lora-hack this uses
+
+### Qwen Image Edit
+
+- The Qwen Image **Edit** model can be downloaded here: <https://huggingface.co/Comfy-Org/Qwen-Image-Edit_ComfyUI/tree/main/split_files/diffusion_models>
+    - Or GGUF version here: <https://huggingface.co/QuantStack/Qwen-Image-Edit-GGUF/tree/main>
+    - The architecture cannot be autodetected and must be set manually.
+        - Click the `☰` hamburger menu on a model, then `Edit Metadata`, then change `Architecture` to `Qwen Image Edit` and hit `Save`
+    - Most params are broadly the same as regular Qwen Image
+    - **CFG** must be `1`, Edit is not compatible with higher CFGs.
+    - **Sigma Shift:** `3` or lower (as low as `0.5`) is a valid range. Some users report that a value below 1 might be ideal.
+    - You can insert image(s) to the prompt box to have it edit that image
+        - It will focus the first image, but you can get it to pull features from additional images (with limited quality)
+    - There are a couple dedicated Qwen Image Edit Lightning Loras <https://huggingface.co/lightx2v/Qwen-Image-Lightning/tree/main>
+        - Take care to separate the Edit lora vs the base Qwen Image lora.
+
 # Video Models
 
-Video models are documented in [Video Model Support](/docs/Video%20Model%20Support.md)
+- Video models are documented in [Video Model Support](/docs/Video%20Model%20Support.md).
+- You can use some (not all) Text2Video models as Text2Image models.
+    - Generally, just set **Text2Video Frames** to `1` and it will be treated as image gen.
+    - Some models may favor different parameters (CFG, Steps, Shift, etc.) for images vs videos.
 
 # Alternative Model Formats
 

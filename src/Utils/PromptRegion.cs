@@ -9,13 +9,36 @@ public class PromptRegion
 
     public string BackgroundPrompt = "";
 
+    public string BasePrompt = "";
+
     public string RefinerPrompt = "";
 
     public string VideoPrompt = "";
 
+    public string VideoSwapPrompt = "";
+
     public enum PartType
     {
-        Region, Object, Segment, ClearSegment, Extend
+        Region, Object, Segment, ClearSegment, Extend, CustomPart
+    }
+
+    /// <summary>Set of all registered custom part prefixes. Use <see cref="RegisterCustomPrefix(string)"/> to add to this.</summary>
+    public static HashSet<string> CustomPartPrefixes = [];
+
+    /// <summary>List of all prefixes for parts. Use <see cref="RegisterCustomPrefix(string)"/> to add to this.</summary>
+    public static List<string> PartPrefixes = ["<region:", "<object:", "<segment:", "<clear:", "<extend:", "<refiner", "<base", "<video"];
+
+    /// <summary>Custom Extensions can add new prompt part types here.
+    /// <para>For example, this will add prompt parsing for &lt;example&gt; or &lt;example:somedata&gt; or etc:
+    /// <code>
+    /// PromptRegion.RegisterCustomPrefix("example");
+    /// </code>
+    /// Your extension code of course has to do its own handling for the actual part data, by matching <see cref="Part.Prefix"/>.
+    /// </para></summary>
+    public static void RegisterCustomPrefix(string prefix)
+    {
+        CustomPartPrefixes.Add(prefix);
+        PartPrefixes.Add($"<{prefix}");
     }
 
     public class Part
@@ -32,6 +55,8 @@ public class PromptRegion
 
         public PartType Type;
 
+        public string Prefix;
+
         public int ContextID;
     }
 
@@ -43,7 +68,7 @@ public class PromptRegion
 
     public PromptRegion(string prompt)
     {
-        if (!prompt.Contains("<region:") && !prompt.Contains("<object:") && !prompt.Contains("<segment:") && !prompt.Contains("<clear:") && !prompt.Contains("<extend:") && !prompt.Contains("<refiner") && !prompt.Contains("<video"))
+        if (!PartPrefixes.Any(prompt.Contains))
         {
             GlobalPrompt = prompt;
             return;
@@ -92,6 +117,12 @@ public class PromptRegion
                     continue;
                 }
             }
+            else if (prefix == "base")
+            {
+                BasePrompt += content;
+                addMore = s => BasePrompt += s;
+                continue;
+            }
             else if (prefix == "refiner")
             {
                 RefinerPrompt += content;
@@ -102,6 +133,12 @@ public class PromptRegion
             {
                 VideoPrompt += content;
                 addMore = s => VideoPrompt += s;
+                continue;
+            }
+            else if (prefix == "videoswap")
+            {
+                VideoSwapPrompt += content;
+                addMore = s => VideoSwapPrompt += s;
                 continue;
             }
             else if (prefix == "object")
@@ -120,6 +157,10 @@ public class PromptRegion
             {
                 type = PartType.ClearSegment;
             }
+            else if (CustomPartPrefixes.Contains(prefix))
+            {
+                type = PartType.CustomPart;
+            }
             else
             {
                 addMore($"<{piece}");
@@ -129,6 +170,7 @@ public class PromptRegion
             {
                 Prompt = content,
                 Type = type,
+                Prefix = prefix,
                 ContextID = id
             };
             string[] coords = regionData.Split(',');
@@ -158,7 +200,7 @@ public class PromptRegion
                     p.Strength2 = 0.6;
                 }
             }
-            else if (type == PartType.Extend)
+            else if (type == PartType.Extend || type == PartType.CustomPart)
             {
                 p.DataText = regionData;
             }

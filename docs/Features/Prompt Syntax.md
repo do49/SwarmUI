@@ -95,6 +95,7 @@
 
 - If your model or current LoRA's have a trigger phrase in their metadata, you can use `<trigger>` to automatically apply those within a prompt.
     - If you have multiple models with trigger phrases, they will be combined into a comma-separated list. For example `cat` and `dog` will be inserted as `cat, dog`.
+    - Semicolons in trigger phrases are automatically replaced with commas. For example, `cat; dog` will be replaced with `cat, dog`.
     - Note this is just a simple autofill, especially for usage in grids or other bulk generations, and not meant to robustly handle all cases. If you require specific formatting, you'll want to just copy the trigger phrase in directly yourself.
     - Fills empty when there's no data to fill.
 
@@ -130,6 +131,15 @@
     - GUI is generally preferred for LoRAs, this is available to allow dynamically messing with presets (eg `<preset:<random:a, b>>`)
     - You can shorthand this as `<p:presetname>`
 
+## Params
+
+- You can directly set generation parameters via `<param[paramName]:paramValue>`
+    - For example, `<param[CFG Scale]:1>` or `<param[cfgscale]:1>` sets CFG Scale to 1.
+    - You can combine this with sub-syntax, eg `<param[cfgscale]:<random:1,2,3>>` to set CFG Scale to a random value.
+    - Some parameters can be 'sectionalized' - that is, apply to specific sections, such as `<refiner>` or `<base>` or `<video>` or `<segment:...>` or `<extend:...>` etc.
+        - This includes: `CFG Scale`, `Steps`, `Sampler`, `Scheduler`
+        - So for example, `<video> <param[cfgscale]:5>` will set the CFG Scale of the video section only to `5`.
+
 ## Automatic Segmentation and Refining
 
 ![img](/docs/images/segment-ref.jpg)
@@ -144,14 +154,19 @@
         - store your models in `(Swarm)/Models/yolov8`
         - Examples of valid YOLOv8 Segmentation models here: https://github.com/hben35096/assets/releases/
         - You can also do `yolo-modelnamehere-1` to grab exactly match #1, and `-2` for match #2, and etc.
-            - You can do this all in one prompt to individual refine specific faces separately
-            - Without this, if there are multiple people, it will do a bulk segmented refine on all faces combined
-            - Note the index order is sorted from leftmost detection to right
+            - You can do this all in one prompt to individual refine specific faces separately.
+            - Without this, if there are multiple people, it will do a bulk segmented refine on all faces combined.
+            - Note the index order is sorted from leftmost detection to right.
         - To control the creativity/threshold with a yolo model just append `,<creativity>,<threshold>`, for example `<segment:yolo-face_yolov8m-seg_60.pt-1,0.8,0.25>` sets a `0.8` creativity and `0.25` threshold.
             - Note the default "confidence threshold" for Yolo models is `0.25`, which is different than is often used with ClipSeg, and does not have a "max threshold" like ClipSeg does.
         - If you have a yolo model with multiple supported classes, you can filter specific classes by appending `:<classes>:` to the model name where `<classes>` is a comma-separated list of class IDs or names, e.g., `<segment:yolo-modelnamehere:0,apple,2:,0.8,0.25>`
-    - There's an advanced parameter under `Segment Refining` named `Segment Model` to customize the base model used for segment processing
-    - There's also a parameter named `Save Segment Mask` to save a preview copy of the generated mask
+    - You can also combine multiple areas into a single segment to refine them as a single group.
+        - Separate the areas with `|` in `texthere`.
+        - For example, `<segment:face|hair>` will find all the faces and hair in the image and refine them as a single group.
+        - This works with YOLOv8 models as well.
+            - `<segment:yolo-face_yolov8m-seg_60.pt | yolo-hair_yolov8m-seg_60.pt | fingers>` will refine the group of faces and hair (found by YOLO) and fingers (found by CLIPSeg) as a single group.
+    - There's an advanced parameter under `Segment Refining` named `Segment Model` to customize the base model used for segment processing.
+    - There's also a parameter named `Save Segment Mask` to save a preview copy of the generated mask.
 
 ## Clear (Transparency)
 
@@ -199,10 +214,24 @@
     - The automatic inpaint can be helpful for improving quality of objects, especially for small regions, but also might produce unexpected results.
     - Objects may use global feature changes, such as `<lora:` syntax input to apply a lora to the object in the inpaint phase.
 
+## Base
+
+- You can use `<base>` to add prompt text that only goes to the base model, excluding refiner/i2v/etc. models
+    - This includes being able to use `<lora:>` to add loras specific to the base model.
+
+## Refiner
+
+- You can use `<refiner>` to add prompt text that only goes to the refine/upscale model
+    - This includes being able to use `<lora:>` to add loras specific to the refiner model.
+
 ## Video
 
 - When using image2video, you can use `<video>` to supply an alternate prompt for the image-to-video generation.
     - For example, `a photo of a cat <video> the cat walks forward`
+    - This includes being able to use `<lora:>` to add loras specific to the video model.
+- When using image2video with a swap model (eg Wan 2.2), you can use `<videoswap>` to supply an alternate prompt for the swap stage.
+    - The `<video>` input will only go to the main i2v model, and the videoswap only to the swap model.
+    - This includes being able to use `<lora:>` to add loras specific to the video swap model.
 
 ## Video Extend
 
@@ -211,6 +240,7 @@
     - For example, `<extend:33>` will extend the video by 33 frames.
     - Use the `Video Extend` parameter group to configure values for this. At least `Video Extend Model` must be set.
     - Must set Overlap less than 1/3rd of the extend frame count.
+        - For many I2V models, overlap of `1` is likely ideal, unless using a model that has been trained to use overlap well.
     - Use the `Advanced Video` parameters as well.
     - Under `Other Fixes` -> `Trim Video End Frames` may be useful on some models. Do not use `Trim Start`
 

@@ -231,6 +231,7 @@ namespace SwarmUI.Text2Image
                         foreach (T2IParamTypes.ControlNetParamHolder controlnet in T2IParamTypes.Controlnets)
                         {
                             user_input.Remove(controlnet.Model);
+                            user_input.Remove(controlnet.Strength);
                         }
                     }
                 }
@@ -238,7 +239,7 @@ namespace SwarmUI.Text2Image
             T2IBackendAccess backend;
             try
             {
-                user_input.PreparsePromptLikes();
+                user_input.ApplyLateSpecialLogic();
                 PreGenerateEvent?.Invoke(new(user_input));
                 claim.Extend(backendWaits: 1);
                 sendStatus();

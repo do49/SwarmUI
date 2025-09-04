@@ -54,6 +54,9 @@ class ImageFullViewHelper {
         if (e.button == 2) { // right-click
             return;
         }
+        if (!findParentOfClass(e.target, 'imageview_modal_imagewrap') || e.ctrlKey || e.shiftKey) {
+            return;
+        }
         this.lastMouseX = e.clientX;
         this.lastMouseY = e.clientY;
         this.isDragging = true;
@@ -148,6 +151,9 @@ class ImageFullViewHelper {
     }
 
     onWheel(e) {
+        if (!findParentOfClass(e.target, 'imageview_modal_imagewrap') || e.ctrlKey || e.shiftKey) {
+            return;
+        }
         this.detachImg();
         let img = this.getImg();
         let origHeight = this.getHeightPercent();
@@ -345,18 +351,27 @@ function copy_current_image_params() {
         let confinements = metadata.lorasectionconfinement;
         let loras = metadata.loras;
         let weights = metadata.loraweights;
+        let promptedLoras = extra.prompted_loras || [];
+        let isOldSwarmVers = !metadata.swarm_version || metadata.swarm_version.match(/^0\.9\.[0-6]\./);
         if (confinements.length == loras.length && loras.length == weights.length) {
             let newLoras = [];
             let newWeights = [];
+            let newConfinements = [];
             for (let i = 0; i < confinements.length; i++) {
-                if (confinements[i] == -1) {
+                if (isOldSwarmVers ? confinements[i] == -1 : !promptedLoras.includes(loras[i])) {
                     newLoras.push(loras[i]);
                     newWeights.push(weights[i]);
+                    newConfinements.push(confinements[i]);
                 }
             }
             metadata.loras = newLoras;
             metadata.loraweights = newWeights;
-            delete metadata.lorasectionconfinement;
+            if (isOldSwarmVers) {
+                delete metadata.lorasectionconfinement;
+            }
+            else {
+                metadata.lorasectionconfinement = newConfinements;
+            }
         }
     }
     if ('loras' in metadata && 'loraweights' in metadata && document.getElementById('input_loras') && metadata.loras.length == metadata.loraweights.length) {
@@ -499,8 +514,8 @@ function alignImageDataFormat() {
     let format = getUserSetting('ImageMetadataFormat', 'auto');
     let extrasWrapper = curImg.querySelector('.current-image-extras-wrapper');
     let scale = img.dataset.previewGrow == 'true' ? 8 : 1;
-    let imgWidth = img.naturalWidth * scale;
-    let imgHeight = img.naturalHeight * scale;
+    let imgWidth = (img.naturalWidth ?? img.videoWidth) * scale;
+    let imgHeight = (img.naturalHeight ?? img.videoHeight) * scale;
     let ratio = imgWidth / imgHeight;
     let height = Math.min(imgHeight, curImg.offsetHeight);
     let width = Math.min(imgWidth, height * ratio);
@@ -662,6 +677,13 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, 
             img.dataset.previewGrow = 'true';
         }
         alignImageDataFormat();
+    }
+    if (isVideo) {
+        img.addEventListener('loadeddata', function() {
+            if (img) {
+                img.onload();
+            }
+        }, false);
     }
     srcTarget.src = src;
     img.className = 'current-image-img';

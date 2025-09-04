@@ -1,7 +1,4 @@
-
-/**
- * If true, the workflow iframe is present. If false, the tab has never been opened, or loading failed.
- */
+/** If true, the workflow iframe is present. If false, the tab has never been opened, or loading failed. */
 let hasComfyLoaded = false;
 
 let comfyButtonsArea = getRequiredElementById('comfy_workflow_buttons');
@@ -14,9 +11,9 @@ let comfyHasTriedToLoad = false;
 
 let comfyAltSaveNodes = ['ADE_AnimateDiffCombine', 'VHS_VideoCombine', 'SaveAnimatedWEBP', 'SaveAnimatedPNG', 'SwarmSaveAnimatedWebpWS', 'SwarmSaveAnimationWS'];
 
-/**
- * Tries to load the ComfyUI workflow frame.
- */
+let swarmComfyInjectedHeaderSpacer = null;
+
+/** Tries to load the ComfyUI workflow frame. */
 function comfyTryToLoad() {
     if (hasComfyLoaded) {
         return;
@@ -27,11 +24,39 @@ function comfyTryToLoad() {
     container.innerHTML = `<iframe class="comfy_workflow_frame" id="comfy_workflow_frame" src="ComfyBackendDirect/" onload="comfyOnLoadCallback()"></iframe>`;
 }
 
-/**
- * Returns the ComfyUI workflow frame (or errors if not present).
- */
+/** Returns the ComfyUI workflow frame (or errors if not present). */
 function comfyFrame() {
     return getRequiredElementById('comfy_workflow_frame');
+}
+
+/** Returns the ComfyUI Vue app object wrapper. */
+function comfyVueApp() {
+    return comfyFrame()?.contentWindow?.document?.querySelector('[data-v-app]')?.__vue_app__;
+}
+
+/** Returns the ComfyUI Vue app i18n object. */
+function comfyVueAppI18n() {
+    let app = comfyVueApp();
+    return app?._context?.provides?.[app?.__VUE_I18N_SYMBOL__]?.global;
+}
+
+/** Edits a message in the comfy translation locale. */
+function comfyVueEditLocale(key, val) {
+    let i18n = comfyVueAppI18n();
+    if (!i18n) {
+        return;
+    }
+    let currentLocale = i18n.locale.value;
+    let current = i18n.getLocaleMessage(currentLocale);
+    let target = current;
+    for (let part of key.split('.').slice(0, -1)) {
+        if (!target[part]) {
+            target[part] = {};
+        }
+        target = target[part];
+    }
+    target[key.split('.').pop()] = val;
+    i18n.setLocaleMessage(currentLocale, current);
 }
 
 function comfyFixMenuLocation() {
@@ -43,15 +68,18 @@ function comfyFixMenuLocation() {
     let bodyTop = frame.contentWindow.document.querySelector('.comfyui-body-top');
     let bodyTopMenu = bodyTop ? bodyTop.querySelector('.comfyui-menu') : null;
     if (bodyTopMenu) {
-        let logo = bodyTopMenu.querySelector('.comfyui-logo');
+        let logo = bodyTopMenu.querySelector('.comfyui-logo-wrapper') || bodyTopMenu.querySelector('.comfyui-logo');
         if (logo && !logo.parentElement.querySelector('.swarm-injected-header-spacer')) {
             let space = document.createElement('span');
             space.className = 'swarm-injected-header-spacer';
-            space.style.width = (swarmComfyMenu.offsetWidth + 30) + 'px';
+            let offsetTarget = (swarmComfyMenu.offsetWidth < 5 ? 296 : swarmComfyMenu.offsetWidth);
+            space.style.width = `${offsetTarget}px`;
+            space.dataset.offsetTarget = offsetTarget;
             logo.parentElement.insertBefore(space, logo.nextSibling);
+            swarmComfyInjectedHeaderSpacer = space;
         }
-        swarmComfyMenu.style.top = '0rem';
-        swarmComfyMenu.style.left = `50px`;
+        swarmComfyMenu.style.top = `${logo.offsetTop}px`;
+        swarmComfyMenu.style.left = `${logo.offsetLeft + logo.offsetWidth}px`;
     }
     else {
         swarmComfyMenu.style.left = undefined;
@@ -69,6 +97,17 @@ function comfyFixMenuLocation() {
     if (sidePanelContainer) {
         sidePanelContainer.style.paddingTop = '60px';
     }
+    // Comfy frontend added an aggro warning if frontend isn't fully up to date, but Swarm keeps it behind because it so often breaks on latest
+    // so let's de-aggro the message a bit.
+    comfyVueEditLocale('g.versionMismatchWarningMessage', 'Frontend version mismatch. In almost all cases, this message can be safely ignored.');
+    setTimeout(() => {
+        // eg Version Compatibility Warning: Frontend version 1.25.10 is outdated. Backend requires 1.25.11 or higher. Visit [docs link] for update instructions.
+        for (let toast of frame.contentWindow.document.querySelectorAll('.p-toast-detail')) {
+            if (toast.innerText.includes('Version Compatibility Warning: Frontend version') && toast.innerText.includes('for update instructions')) {
+                toast.innerText = toast.innerText.split('. ').slice(0, 2).join('. ') + '. In almost all cases, this message can be safely ignored.';
+            }
+        }
+    }, 100);
 }
 
 setTimeout(comfyFixMenuLocation, 10 * 1000);
@@ -1144,10 +1183,18 @@ function comfyToggleButtonsVisible() {
     if (area.style.display == 'none') {
         area.style.display = '';
         button.innerHTML = '&#x2B9D;';
+        area.parentElement.classList.remove('comfy_buttons_closeable_area_closed');
+        if (swarmComfyInjectedHeaderSpacer) {
+            swarmComfyInjectedHeaderSpacer.style.width = `${swarmComfyInjectedHeaderSpacer.dataset.offsetTarget}px`;
+        }
     }
     else {
         area.style.display = 'none';
         button.innerHTML = '&#x2B9F;';
+        area.parentElement.classList.add('comfy_buttons_closeable_area_closed');
+        if (swarmComfyInjectedHeaderSpacer) {
+            swarmComfyInjectedHeaderSpacer.style.width = `30px`;
+        }
     }
 }
 

@@ -76,8 +76,10 @@ def make_swarm_sampler_callback(steps, device, model, previews):
     def callback(step, x0, x, total_steps):
         pbar.update_absolute(step + 1, total_steps, None)
         if previewer:
+            if step == 0 or (step < 3 and x0.ndim == 5 and x0.shape[1] > 8):
+                x0 = x0.clone().cpu() # Sync copy to CPU for first few steps to prevent reading old data, more steps for videos. Future steps allow comfy to do its async non_blocky stuff.
             if x0.ndim == 5:
-                # mochi shape is [batch, channels, backwards time, width, height], for previews needs to be swapped to [forwards time, channels, width, height]
+                # video shape is [batch, channels, backwards time, width, height], for previews needs to be swapped to [forwards time, channels, width, height]
                 x0 = x0[0].permute(1, 0, 2, 3)
                 x0 = torch.flip(x0, [0])
             def do_preview(id, index):
@@ -86,11 +88,14 @@ def make_swarm_sampler_callback(steps, device, model, previews):
             if previews == "iterate":
                 do_preview(0, step % x0.shape[0])
             elif previews == "animate":
-                images = []
-                for i in range(x0.shape[0]):
-                    preview_img = previewer.decode_latent_to_preview_image("JPEG", x0[i:i+1])
-                    images.append(preview_img[1])
-                swarm_send_animated_preview(0, images)
+                if x0.shape[0] == 1:
+                    do_preview(0, 0)
+                else:
+                    images = []
+                    for i in range(x0.shape[0]):
+                        preview_img = previewer.decode_latent_to_preview_image("JPEG", x0[i:i+1])
+                        images.append(preview_img[1])
+                    swarm_send_animated_preview(0, images)
             elif previews == "default":
                 for i in range(x0.shape[0]):
                     preview_img = previewer.decode_latent_to_preview_image("JPEG", x0[i:i+1])
@@ -129,7 +134,7 @@ AYS_NOISE_LEVELS = {
 def split_latent_tensor(latent_tensor, tile_size=1024, scale_factor=8):
     """Generate tiles for a given latent tensor, considering the scaling factor."""
     latent_tile_size = tile_size // scale_factor  # Adjust tile size for latent space
-    _, _, height, width = latent_tensor.shape
+    height, width = latent_tensor.shape[-2:]
 
     # Determine the number of tiles needed
     num_tiles_x = ceil(width / latent_tile_size)
@@ -163,7 +168,7 @@ def split_latent_tensor(latent_tensor, tile_size=1024, scale_factor=8):
             y_start = round(y_start)
 
             # Crop the tile from the latent tensor
-            tile_tensor = latent_tensor[:, :, y_start:y_start + latent_tile_size, x_start:x_start + latent_tile_size]
+            tile_tensor = latent_tensor[..., y_start:y_start + latent_tile_size, x_start:x_start + latent_tile_size]
             tiles.append(((x_start, y_start, x_start + latent_tile_size, y_start + latent_tile_size), tile_tensor))
 
     return tiles
@@ -191,19 +196,19 @@ def stitch_latent_tensors(original_size, tiles, scale_factor=8):
         tile_height = lower - upper
         feather = tile_width // 8  # Assuming feather size is consistent with the example
 
-        mask = torch.ones(tile.shape[0], tile.shape[1], tile.shape[2], tile.shape[3])
+        mask = torch.ones_like(tile)
 
         if not first_tile_in_row:  # Left feathering for tiles other than the first in the row
             for t in range(feather):
-                mask[:, :, :, t:t+1] *= (1.0 / feather) * (t + 1)
+                mask[..., :, t:t+1] *= (1.0 / feather) * (t + 1)
 
         if upper != 0:  # Top feathering for all tiles except the first row
             for t in range(feather):
-                mask[:, :, t:t+1, :] *= (1.0 / feather) * (t + 1)
+                mask[..., t:t+1, :] *= (1.0 / feather) * (t + 1)
 
         # Apply the feathering mask
-        combined_area = tile * mask + result[:, :, upper:lower, left:right] * (1.0 - mask)
-        result[:, :, upper:lower, left:right] = combined_area
+        combined_area = tile * mask + result[..., upper:lower, left:right] * (1.0 - mask)
+        result[..., upper:lower, left:right] = combined_area
 
     return result
 
@@ -276,7 +281,7 @@ class SwarmKSampler:
             elif isinstance(model.model, Chroma):
                 model_type = "Chroma"
             else:
-                print(f"Unknown model type: {type(model.model)}, defaulting to SD1")
+                print(f"AlignYourSteps: Unknown model type: {type(model.model)}, defaulting to SD1")
                 model_type = "SD1"
             sigmas = AYS_NOISE_LEVELS[model_type][:]
             if (steps + 1) != len(sigmas):

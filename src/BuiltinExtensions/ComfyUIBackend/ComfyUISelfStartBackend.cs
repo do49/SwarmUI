@@ -282,7 +282,7 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
         return Process.Start(start);
     }
 
-    public static string SwarmValidatedFrontendVersion = "1.23.4";
+    public static string SwarmValidatedFrontendVersion = "1.25.11";
 
     public override async Task Init()
     {
@@ -301,7 +301,7 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
             addedArgs += $" --extra-model-paths-config {pathRaw}";
             if (Utilities.PresumeNVidia30xx && Program.ServerSettings.Performance.AllowGpuSpecificOptimizations)
             {
-                addedArgs += " --fast";
+                addedArgs += " --fast fp16_accumulation cublas_ops"; // TODO: Temp due to fp8 mat mult being borked on Qwen Image
             }
             if (Settings.EnablePreviews)
             {
@@ -348,8 +348,8 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
                 {
                     string path = Path.GetFullPath(Settings.StartScript).Replace('\\', '/').BeforeLast('/');
                     AddLoadStatus("Running git pull in comfy folder...");
-                    string response = await Utilities.RunGitProcess(autoUpd == "aggressive" ? "pull --autostash" : "pull", path);
-                    AddLoadStatus($"Comfy git pull response: {response.Trim()}");
+                    string response = (await Utilities.RunGitProcess(autoUpd == "aggressive" ? "pull --autostash" : "pull", path)).Trim();
+                    AddLoadStatus($"Comfy git pull response: {response}");
                     if (autoUpd == "aggressive")
                     {
                         // Backup because multiple users have wound up off master branch sometimes, aggressive should push back to master so it's repaired by next startup
@@ -370,6 +370,10 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
                             string repullResponse = await Utilities.RunGitProcess("pull --autostash", path);
                             AddLoadStatus($"Comfy git re-pull response: {repullResponse.Trim()}");
                         }
+                    }
+                    else if (response.Contains("You are not currently on a branch"))
+                    {
+                        Logs.Warning($"ComfyUI auto-update git pulled failed with a 'not currently on a branch' message. You will be stuck on an outdated ComfyUI version. To fix this, please go to Server->Backends->Edit your comfy backend->change AutoUpdate to Aggressive, then save.");
                     }
                     if (response.Contains("error: Your local changes to the following files"))
                     {
@@ -469,12 +473,21 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
                         ">=" => curVers < actualVers,
                         "<=" => curVers > actualVers,
                         "==" => curVers < actualVers,
+                        "force-eq" => curVers != actualVers,
                         _ => throw new ArgumentException($"Invalid version relation '{rel}' for package '{libFolder}' with version '{version}'.")
                     };
                 }
                 if (doUpdate)
                 {
-                    await update(libFolder, $"{pipName}{rel}{version}");
+                    if (rel == "force-eq")
+                    {
+                        await pipCall($"Remove old '{libFolder}'", $"uninstall -y {pipName}");
+                        await pipCall(libFolder, $"install {pipName}{rel}{version}");
+                    }
+                    else
+                    {
+                        await update(libFolder, $"{pipName}{rel}{version}");
+                    }
                 }
             }
             string frontendVersion = getVers("comfyui_frontend_package");
@@ -534,9 +547,20 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
             {
                 if (!libs.Contains("nunchaku") && numpyVers is not null && Version.Parse(numpyVers) > Version.Parse("2.0")) // Patch-hack because numpy v2 has incompatibilities with insightface
                 { // Note: sometimes 2+ is needed, so we carefully only remove for the first install of nunchaku, and allow it to be manually shifted back to 2+ after without undoing it
+                    if (libs.Contains("opencv_python_headless"))
+                    {
+                        await pipCall($"Remove opencv_python_headless", $"uninstall -y opencv_python_headless");
+                        await update("opencv_python_headless", "opencv_python_headless==4.11.0.86");
+                    }
+                    if (libs.Contains("opencv_python"))
+                    {
+                        await pipCall($"Remove opencv_python", $"uninstall -y opencv_python");
+                        await update("opencv_python", "opencv_python==4.11.0.86");
+                    }
                     await pipCall($"Remove numpy2+", $"uninstall -y numpy");
                     await update("numpy", "numpy==1.26.4");
                 }
+                await install("peft", "peft"); // Late-added nunchaku dep
                 // Nunchaku devs seem very confused how to python package. So we gotta do some cursed install for them.
                 bool isValid = true;
                 string pyVers = "310";
@@ -558,17 +582,19 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
                 else if (torchPipVers.StartsWith("2.6.")) { torchVers = "2.6"; }
                 else if (torchPipVers.StartsWith("2.7.")) { torchVers = "2.7"; }
                 else if (torchPipVers.StartsWith("2.8.")) { torchVers = "2.8"; }
+                else if (torchPipVers.StartsWith("2.9.")) { torchVers = "2.9"; }
                 else
                 {
-                    Logs.Error($"Nunchaku is not currently supported on your Torch version ({torchPipVers} not in range [2.5, 2.8]).");
+                    Logs.Error($"Nunchaku is not currently supported on your Torch version ({torchPipVers} not in range [2.5, 2.9]).");
                     isValid = false;
                 }
-                // eg https://github.com/mit-han-lab/nunchaku/releases/download/v0.3.1/nunchaku-0.3.1+torch2.5-cp310-cp310-linux_x86_64.whl
-                string url = $"https://github.com/mit-han-lab/nunchaku/releases/download/v0.3.1/nunchaku-0.3.1+torch{torchVers}-cp{pyVers}-cp{pyVers}-{osVers}.whl";
+                string nunchakuTargetVersion = "1.0.0.dev20250823"; string nunchakuRelName = "1.0.0dev20250823"; // they fucked up the url format omg
+                // eg https://github.com/nunchaku-tech/nunchaku/releases/download/v0.3.2/nunchaku-0.3.2+torch2.5-cp310-cp310-linux_x86_64.whl
+                string url = $"https://github.com/nunchaku-tech/nunchaku/releases/download/v{nunchakuRelName}/nunchaku-{nunchakuTargetVersion}+torch{torchVers}-cp{pyVers}-cp{pyVers}-{osVers}.whl";
                 if (isValid)
                 {
                     string nunchakuVers = getVers("nunchaku");
-                    if (nunchakuVers is not null && Version.Parse(nunchakuVers) < Version.Parse("0.3.1"))
+                    if (nunchakuVers is not null && Version.Parse(nunchakuVers.Before(".dev")) < Version.Parse(nunchakuTargetVersion.Before(".dev")))
                     {
                         await update("nunchaku", url);
                     }
@@ -622,6 +648,8 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
     /// <summary>List of required python packages that need a specific version, in structure (string libFolder, string pipName, string rel, string version).</summary>
     public static List<(string, string, string, string)> RequiredVersionPythonPackages =
     [
+        ("aiohttp", "aiohttp", ">=", "3.11.8"),
+        ("yarl", "yarl", ">=", "1.18.0"),
         ("av", "av", ">=", "14.2.0"),
         ("spandrel", "spandrel", ">=", "0.4.1"),
         ("transformers", "transformers", ">=", "4.37.2"),
@@ -651,7 +679,7 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
 
     public override void PostResultCallback(string filename)
     {
-        string path =  $"{ComfyPathBase}/output/{filename}";
+        string path = $"{ComfyPathBase}/output/{filename}";
         Task.Run(() =>
         {
             if (File.Exists(path))

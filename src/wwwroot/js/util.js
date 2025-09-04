@@ -482,18 +482,30 @@ function getCookie(name) {
 
 /** Lists all cookies that start with the given prefix. */
 function listCookies(prefix) {
-    let decodedCookie = decodeURIComponent(document.cookie);
-    let ca = decodedCookie.split(';');
-    let result = [];
-    for(let i = 0; i < ca.length; i++) {
-        let c = ca[i].trim();
-        let equal = c.indexOf('=');
-        let name = c.substring(0, equal);
-        if (name.startsWith(prefix)) {
-            result.push(name);
+    try {
+        let decodedCookie = decodeURIComponent(document.cookie);
+        let ca = decodedCookie.split(';');
+        let result = [];
+        for(let i = 0; i < ca.length; i++) {
+            let c = ca[i].trim();
+            let equal = c.indexOf('=');
+            let name = c.substring(0, equal);
+            if (name.startsWith(prefix)) {
+                result.push(name);
+            }
         }
+        return result;
     }
-    return result;
+    catch (e) {
+        console.error('Error listing cookies:', e);
+        if (e instanceof URIError) { // Malformed cookie data, try to nuke em
+            for (let cookie of document.cookie.split(';')) {
+                let name = cookie.trim().split('=')[0];
+                deleteCookie(name);
+            }
+        }
+        return [];
+    }
 }
 
 /** Deletes the cookie with the given name. */
@@ -993,4 +1005,18 @@ function copyText(text) {
         document.execCommand('copy');
         document.body.removeChild(temp);
     }
+}
+
+/** Measures the width of a given text in a given relative div. */
+function measureText(text, relativeDiv = null) {
+    relativeDiv = relativeDiv || document.body;
+    let div = document.createElement('div');
+    div.style.position = 'absolute';
+    div.style.opacity = '0';
+    div.style.left = '-999999px';
+    div.innerText = text;
+    relativeDiv.appendChild(div);
+    let width = div.offsetWidth;
+    relativeDiv.removeChild(div);
+    return width;
 }

@@ -154,6 +154,8 @@ body {
 }
 .card-body {
     background-color: var(--background);
+    border-bottom-left-radius: 5px;
+    border-bottom-right-radius: 5px;
 }
 .backend-errored .card-header {
     background-color: var(--background-gray-danger);
@@ -365,6 +367,7 @@ textarea, input, select {
     transform: translate(-50%, 0);
     animation-name: toast-flash;
     animation-duration: 2s;
+    border-radius: 6px;
 }
 .auto-input-qbutton {
     margin-left: 0.25rem;
