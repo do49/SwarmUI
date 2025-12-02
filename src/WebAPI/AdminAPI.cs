@@ -25,6 +25,7 @@ public static class AdminAPI
         API.RegisterAPICall(ListRecentLogMessages, false, Permissions.ViewLogs);
         API.RegisterAPICall(LogSubmitToPastebin, true, Permissions.ViewLogs);
         API.RegisterAPICall(ShutdownServer, true, Permissions.Shutdown);
+        API.RegisterAPICall(AdminTakeControl, true, Permissions.AutomatedControl);
         API.RegisterAPICall(GetServerResourceInfo, false, Permissions.ReadServerInfoPanels);
         API.RegisterAPICall(GetGlobalStatus, false, Permissions.ReadServerInfoPanels);
         API.RegisterAPICall(DebugLanguageAdd, true, Permissions.AdminDebug);
@@ -41,6 +42,7 @@ public static class AdminAPI
         API.RegisterAPICall(AdminChangeUserSettings, true, Permissions.ManageUsers);
         API.RegisterAPICall(AdminDeleteUser, true, Permissions.ManageUsers);
         API.RegisterAPICall(AdminGetUserInfo, false, Permissions.ManageUsers);
+        API.RegisterAPICall(AdminInterruptUser, true, Permissions.InterruptOthers);
         API.RegisterAPICall(AdminListRoles, false, Permissions.ConfigureRoles);
         API.RegisterAPICall(AdminAddRole, true, Permissions.ConfigureRoles);
         API.RegisterAPICall(AdminEditRole, true, Permissions.ConfigureRoles);
@@ -354,7 +356,18 @@ public static class AdminAPI
     public static async Task<JObject> ShutdownServer(Session session)
     {
         Logs.Warning($"User {session.User.UserID} requested server shutdown.");
-        _ = Task.Run(() => Program.Shutdown());
+        _ = Utilities.RunCheckedTask(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(0.5));
+            Program.Shutdown();
+        });
+        return new JObject() { ["success"] = true };
+    }
+
+    [API.APIDescription("Marks the server as under control of a remote management, such as an AutoScalingBackend.\nIf `--require_control_within` was used, the server will shut down if the remote management does not consistently send pings.", "\"success\": true")]
+    public static async Task<JObject> AdminTakeControl(Session session)
+    {
+        Program.TimeLastRemoteControlPing = Environment.TickCount64;
         return new JObject() { ["success"] = true };
     }
 
@@ -386,7 +399,7 @@ public static class AdminAPI
     public static async Task<JObject> GetServerResourceInfo(Session session)
     {
         NvidiaUtil.NvidiaInfo[] gpuInfo = NvidiaUtil.QueryNvidia();
-        MemoryStatus memStatus = SystemStatusMonitor.HardwareInfo.MemoryStatus;
+        MemoryStatus memStatus = SystemStatusMonitor.HardwareInfo?.MemoryStatus ?? new();
         JObject result = new()
         {
             ["cpu"] = new JObject()
@@ -496,7 +509,11 @@ public static class AdminAPI
                     "id": "useridhere",
                     "last_active_seconds": 0,
                     "active_sessions": [ "addresshere", "..." ],
-                    "last_active": "10 seconds ago"
+                    "last_active": "10 seconds ago",
+                    "waiting_gens": 0,
+                    "loading_models": 0,
+                    "waiting_backends": 0,
+                    "live_gens": 0
                 }
             ]
         """)]
@@ -516,13 +533,36 @@ public static class AdminAPI
             }
             return result;
         }
-        JArray list = [.. Program.Sessions.Users.Values.Where(u => u.TimeSinceLastPresent.TotalMinutes < 3 && !u.UserID.StartsWith("__")).OrderBy(u => u.UserID).Select(u => new JObject()
+        Interlocked.MemoryBarrier();
+        JArray list = [.. Program.Sessions.Users.Values.Where(u => !u.UserID.StartsWith("__")).OrderBy(u => u.UserID).Select(u =>
         {
-            ["id"] = u.UserID,
-            ["last_active_seconds"] = u.TimeSinceLastUsed.TotalSeconds,
-            ["active_sessions"] = sessWrangle(u.CurrentSessions.Values.Where(s => s.TimeSinceLastUsed.TotalMinutes < 3).Select(s => s.OriginAddress)),
-            ["last_active"] = $"{u.TimeSinceLastUsed.SimpleFormat(false, false)} ago"
-        }).ToArray()];
+            int totalWaitingGens = 0;
+            int totalLoadingModels = 0;
+            int totalWaitingBackends = 0;
+            int totalLiveGens = 0;
+            foreach (Session sess in u.CurrentSessions.Values)
+            {
+                totalWaitingGens += sess.WaitingGenerations;
+                totalLoadingModels += sess.LoadingModels;
+                totalWaitingBackends += sess.WaitingBackends;
+                totalLiveGens += sess.LiveGens;
+            }
+            if (u.TimeSinceLastPresent.TotalMinutes > 3 && totalWaitingGens == 0 && totalLoadingModels == 0 && totalWaitingBackends == 0 && totalLiveGens == 0)
+            {
+                return null;
+            }
+            return new JObject()
+            {
+                ["id"] = u.UserID,
+                ["last_active_seconds"] = u.TimeSinceLastUsed.TotalSeconds,
+                ["active_sessions"] = sessWrangle(u.CurrentSessions.Values.Where(s => s.TimeSinceLastUsed.TotalMinutes < 3).Select(s => s.OriginAddress)),
+                ["last_active"] = $"{u.TimeSinceLastUsed.SimpleFormat(false, false)} ago",
+                ["waiting_gens"] = totalWaitingGens,
+                ["loading_models"] = totalLoadingModels,
+                ["waiting_backends"] = totalWaitingBackends,
+                ["live_gens"] = totalLiveGens
+            };
+        }).Where(val => val is not null).ToArray()];
         return new JObject() { ["users"] = list };
     }
 
@@ -557,9 +597,17 @@ public static class AdminAPI
                 {
                     string showOutput = await Utilities.RunGitProcess($"show --no-patch --format=%h^%ci^%s {commits[i]}");
                     string[] parts = showOutput.SplitFast('^', 2);
-                    DateTimeOffset date = DateTimeOffset.Parse(parts[1].Trim()).ToUniversalTime();
-                    string dateFormat = $"{date:yyyy-MM-dd HH:mm:ss}";
-                    commits[i] = $"{dateFormat}: {parts[2]}";
+                    if (parts.Length < 2)
+                    {
+                        Logs.Error($"Cannot parse commit details for commit '{commits[i]}': yielded '{showOutput}' with split {parts.Length}");
+                        commits[i] = $"{commits[i]}: (unknown commit details, see error in logs)";
+                    }
+                    else
+                    {
+                        DateTimeOffset date = DateTimeOffset.Parse(parts[1].Trim()).ToUniversalTime();
+                        string dateFormat = $"{date:yyyy-MM-dd HH:mm:ss}";
+                        commits[i] = $"{dateFormat}: {parts[2]}";
+                    }
                 }
             }
             updatesPreview = [.. commits];
@@ -763,6 +811,7 @@ public static class AdminAPI
     public static async Task<JObject> AdminListUsers(Session session)
     {
         List<string> users = [.. Program.Sessions.UserDatabase.FindAll().Select(u => u.ID)];
+        users.Remove("__shared");
         return new JObject() { ["users"] = JArray.FromObject(users) };
     }
 
@@ -930,6 +979,27 @@ public static class AdminAPI
             ["settings"] = AutoConfigToParamData(user.Settings, false),
             ["max_t2i"] = user.CalcMaxT2ISimultaneous
         };
+    }
+
+    [API.APIDescription("Admin route to interrupt another user's queue.",
+        """
+            "success": true
+        """)]
+    [API.APINonfinalMark]
+    public static async Task<JObject> AdminInterruptUser(Session session,
+        [API.APIParameter("The name of the user to interrupt.")] string name)
+    {
+        User user = Program.Sessions.GetUser(name, false);
+        if (user is null)
+        {
+            return new JObject() { ["error"] = "No user by that name exists." };
+        }
+        Logs.Debug($"Admin '{session.User.UserID}' interrupted all sessions for user '{user.UserID}'.");
+        foreach (Session sess in user.CurrentSessions.Values.ToArray())
+        {
+            sess.Interrupt();
+        }
+        return new JObject() { ["success"] = true };
     }
 
     [API.APIDescription("Admin route to get a list of all available roles.",

@@ -104,8 +104,11 @@ If you're an advanced user familiar with command line usage and/or with a custom
 The easiest way to reinstall, is just:
 - Close SwarmUI
 - Rename the Swarm folder to `Old_SwarmUI`
-- run the installer again, fully, til you get to a working Generate tab
+- run the installer again, fully, until you get to a working Generate tab
+- close SwarmUI
 - copy/move over any files you want from Old to new.
+    - Notably, you probably want to move back in: `Data`, `Models`, `Output`
+- Then relaunch SwarmUI
 
 However, if you want an "in-place reinstall":
 - Close SwarmUI
@@ -118,6 +121,14 @@ However, if you want an "in-place reinstall":
 Most importantly after reinstalling:
 - Do not repeat whatever actions led to things breaking so bad you needed the reinstall in the first place!
 - The most common reason for a total reinstall is overusage of Comfy Manager leading to a corrupted comfy backend installation. If this is the case for you, either avoid Manager, or just be much more cautious about when to use it in the future.
+
+## Model Issues
+
+### Newly Supported Model Isn't Working
+
+If you're trying a new model class that Swarm supports, but it's not working, the most common cause is: you forgot to update first! So, update SwarmUI via the Server Info tab.
+- If you have updated already SwarmUI, but you downloaded the model before that update, you can hit Utilities -> Reset All Metadata, which will cause Swarm to re-scan the model and re-detect what architecture it uses.
+- If that doesn't fix it, look in the Models tab of the Generate tab. Is the `Type:` listed correct? If not, hit the `☰` hamburger menu then `Edit Metadata`, then change the Architecture to the correct value for the model.
 
 ## Other
 

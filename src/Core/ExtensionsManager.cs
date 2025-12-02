@@ -27,7 +27,9 @@ public class ExtensionsManager
             {
                 "parameters" => "<span class=\"tag\" title=\"Adds new T2I Parameters\">Parameters</span>",
                 "tabs" => "<span class=\"tag\" title=\"Adds new tabs on the main page\">Tabs</span>",
+                "ui" => "<span class=\"tag\" title=\"modifies the visual user interface\">UI</span>",
                 "nodes" => "<span class=\"tag\" title=\"Adds Comfy nodes\">Nodes</span>",
+                "tools" => "<span class=\"tag\" title=\"Adds new tools to the Tools menu\">Tools</span>",
                 "backend" => "<span class=\"tag\" title=\"Adds a new backend\">Backend</span>",
                 "hidden" => "<span class=\"tag hidden-tag\" title=\"Should not be visible\">Hidden</span>",
                 "paid" => "<span class=\"tag paid-tag\" title=\"Requires a paid account\">Paid</span>",

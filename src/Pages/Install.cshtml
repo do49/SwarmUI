@@ -72,6 +72,18 @@
                 </div>
                 <br><br>
             }
+            if (WebUtil.NeedWindowsAdminWarn())
+            {
+                <br><br><br>
+                <div class="alert alert-warning">
+                    <h4 class="alert-heading">Don't Run As Admin</h4>
+                    <p class="mb-0">You seem to be running this installer as administrator.
+                        <br>This is not necessary and will cause issues.
+                        <br>Please close this installer, and run it as a regular user.
+                    </p>
+                </div>
+                <br><br>
+            }
         }
     </div>
 
@@ -143,41 +155,17 @@
         <div class="install_hint">You can always change this later in the User Settings page.</div>
         <br>
         <fieldset class="form-group theme_preview" id="theme_selection_field">
-            <div class="form-check theme_preview_modern_dark" id="theme_input_modern_dark">
-                <input class="form-check-input" type="radio" name="theme_radio" id="theme_moderndark" value="modern_dark" checked="">
-                <label class="form-check-label" for="theme_moderndark">Modern Dark</label>
-                <span class="button_example">Example</span>
-            </div>
-            <div class="form-check theme_preview_modern_light" id="theme_input_modern_light">
-                <input class="form-check-input" type="radio" name="theme_radio" id="theme_modernlight" value="modern_light">
-                <label class="form-check-label" for="theme_modernlight">Modern Light</label>
-                <span class="button_example">Example</span>
-            </div>
-            <div class="form-check theme_preview_dark_dreams" id="theme_input_dark_dreams">
-                <input class="form-check-input" type="radio" name="theme_radio" id="theme_darkdreams" value="dark_dreams">
-                <label class="form-check-label" for="theme_darkdreams">Dark Dreams</label>
-                <span class="button_example">Example</span>
-            </div>
-            <div class="form-check theme_preview_cyber_swarm" id="theme_input_cyber_swarm">
-                <input class="form-check-input" type="radio" name="theme_radio" id="theme_cyberswarm" value="cyber_swarm">
-                <label class="form-check-label" for="theme_cyberswarm">Cyber Swarm</label>
-                <span class="button_example">Example</span>
-            </div>
-            <div class="form-check theme_preview_punked" id="theme_input_punked">
-                <input class="form-check-input" type="radio" name="theme_radio" id="theme_punked" value="punked">
-                <label class="form-check-label" for="theme_punked">Punked</label>
-                <span class="button_example">Example</span>
-            </div>
-            <div class="form-check theme_preview_gravity_blue" id="theme_input_gravity_blue">
-                <input class="form-check-input" type="radio" name="theme_radio" id="theme_gravityblue" value="gravity_blue">
-                <label class="form-check-label" for="theme_gravityblue">Gravity Blue</label>
-                <span class="button_example">Example</span>
-            </div>
-            <div class="form-check theme_preview_eyesear_white" id="theme_input_eyesear_white">
-                <input class="form-check-input" type="radio" name="theme_radio" id="theme_eyesearwhite" value="eyesear_white">
-                <label class="form-check-label" for="theme_eyesearwhite">Eyesear White</label>
-                <span class="button_example">Example</span>
-            </div>
+            @foreach (var theme in Program.Web.RegisteredThemes.Values)
+            {
+                string themeName = $"{theme.Name.Replace(" (Legacy)","")}";
+                string themeId = $"{theme.ID}";
+                string themeIdNoUnderscore = $"{theme.ID.Replace("_", "")}";
+                <div class="form-check theme_preview_@themeId" id="theme_input_@themeId">
+                    <input class="form-check-input" type="radio" name="theme_radio" id="theme_@themeIdNoUnderscore" value="@themeId" @(themeId == "modern_dark" ? "checked" : "")>
+                    <label class="form-check-label" for="theme_@themeIdNoUnderscore">@themeName</label>
+                    <iframe class="form-check-iframe" src="ThemePreview?theme=@themeId"></iframe>
+                </div>
+            }
         </fieldset>
     </div>
 

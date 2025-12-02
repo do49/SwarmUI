@@ -14,6 +14,7 @@ using System.Net.WebSockets;
 using System.Web;
 using Newtonsoft.Json;
 using System.Buffers.Binary;
+using SwarmUI.Media;
 
 namespace SwarmUI.Builtin_ComfyUIBackend;
 
@@ -44,7 +45,16 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
     {
         Logs.Verbose($"Comfy backend {BackendData.ID} loading value set...");
         using CancellationTokenSource cancel = Utilities.TimedCancel(TimeSpan.FromMinutes(maxMinutes));
-        JObject result = await SendGet<JObject>("object_info", cancel.Token);
+        JObject result;
+        if (cancel.IsCancellationRequested) // Obscure fallback: I've seen this insta-cancel, possibly related to system clock instability, so give a giant timeout in that case.
+        {
+            using CancellationTokenSource altCancel = Utilities.TimedCancel(TimeSpan.FromMinutes(maxMinutes + 10));
+            result = await SendGet<JObject>("object_info", altCancel.Token);
+        }
+        else
+        {
+            result = await SendGet<JObject>("object_info", cancel.Token);
+        }
         if (result.TryGetValue("error", out JToken errorToken))
         {
             Logs.Verbose($"Comfy backend {BackendData.ID} failed to load value set: {errorToken}");
@@ -98,6 +108,10 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             Logs.Error($"Comfy backend {BackendData.ID} failed to load raw node backend info: {ex.ReadableString()}");
         }
         Logs.Verbose($"Comfy backend {BackendData.ID} loaded value set and parsed.");
+        if (!NodeTypes.Contains("SwarmKSampler"))
+        {
+            Logs.Warning($"Comfy backend {BackendData.ID} is missing the Swarm core nodes! Core functionalities will be missing. Please ensure you are using a well-installed ComfyUI Self-Starting backend. If you are, check debug logs for backend errors.");
+        }
         AddLoadStatus("Done parsing value set.");
     }
 
@@ -113,6 +127,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
 
     public async Task InitInternal(bool ignoreWebError)
     {
+        await ClearSockets();
         MaxUsages = 1 + OverQueue;
         if (string.IsNullOrWhiteSpace(APIAddress))
         {
@@ -163,10 +178,8 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
         }
     }
 
-    /// <inheritdoc/>
-    public override async Task Shutdown()
+    public async Task ClearSockets()
     {
-        Logs.Info($"ComfyUI backend {BackendData.ID} shutting down...");
         while (ReusableSockets.TryDequeue(out ReusableSocket socket))
         {
             try
@@ -183,7 +196,15 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                 Logs.Verbose($"ComfyUI backend {BackendData.ID} failed to close websocket: {ex.ReadableString()}");
             }
         }
+    }
+
+    /// <inheritdoc/>
+    public override async Task Shutdown()
+    {
+        Logs.Info($"ComfyUI backend {BackendData.ID} shutting down...");
+        await ClearSockets();
         Idler.Stop();
+        TimesErrorIgnored = 0;
         Status = BackendStatus.DISABLED;
     }
 
@@ -309,15 +330,16 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                 if (!hasDeletedQueueItem)
                 {
                     hasDeletedQueueItem = true;
-                    Logs.Debug("ComfyUI queue-item-remove requested");
+                    Logs.Debug($"ComfyUI queue-item-remove requested, promptId={promptId}");
                     await HttpClient.PostAsync($"{APIAddress}/queue", new StringContent(new JObject() { ["delete"] = new JArray() { promptId } }.ToString()), Program.GlobalProgramCancel);
                 }
                 if (!hasInterrupted && isMe)
                 {
                     hasInterrupted = true;
-                    Logs.Debug("ComfyUI Interrupt requested");
-                    await HttpClient.PostAsync($"{APIAddress}/interrupt", new StringContent(""), Program.GlobalProgramCancel);
+                    Logs.Debug($"ComfyUI Interrupt requested, promptId={promptId}");
+                    await HttpClient.PostAsync($"{APIAddress}/interrupt", new StringContent(new JObject() { ["prompt_id"] = promptId }.ToString()), Program.GlobalProgramCancel);
                 }
+                await HttpClient.PostAsync($"{APIAddress}/history", new StringContent(new JObject() { ["delete"] = new JArray() { promptId } }.ToString()), Program.GlobalProgramCancel);
             }
             while (true)
             {
@@ -326,7 +348,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                     await doInterruptNow();
                     return;
                 }
-                Task<byte[]> getData = socket.ReceiveData(100 * 1024 * 1024, Program.GlobalProgramCancel);
+                Task<byte[]> getData = socket.ReceiveData(Utilities.ExtraLargeMaxReceive, Program.GlobalProgramCancel);
                 Task t = await Task.WhenAny(getData, interruptTask);
                 if (t == interruptTask)
                 {
@@ -402,11 +424,11 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                     }
                     else
                     {
-                        (string formatLabel, int index, int eventId) = ComfyRawWebsocketOutputToFormatLabel(output);
-                        Logs.Verbose($"ComfyUI Websocket sent: {output.Length} bytes of image data as event {eventId} in format {formatLabel} to index {index}");
-                        if (isExpectingText || formatLabel == "txt")
+                        (MediaType mediaType, int index, int eventId, int preBytes) = ComfyRawWebsocketOutputToFormatLabel(output);
+                        Logs.Verbose($"ComfyUI Websocket sent: {output.Length} bytes of image data as event {eventId} in format {mediaType} to index {index}");
+                        if (isExpectingText || mediaType.MetaType == MediaMetaType.Text)
                         {
-                            string metadata = StringConversionHelper.UTF8Encoding.GetString(output[8..]);
+                            string metadata = StringConversionHelper.UTF8Encoding.GetString(output[preBytes..]);
                             int colon = metadata.IndexOf(':');
                             if (metadata.Length > 1_000_000)
                             {
@@ -438,10 +460,9 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                         }
                         else if (isReceivingOutputs)
                         {
-                            Image.ImageType type = ComfyFormatLabelToImageType(formatLabel);
-                            if (isExpectingVideo && type == Image.ImageType.IMAGE)
+                            if (isExpectingVideo && mediaType == MediaType.ImageJpg) // Fall back correction for some unspecified data
                             {
-                                type = Image.ImageType.VIDEO;
+                                mediaType = MediaType.VideoMp4;
                             }
                             bool isReal = true;
                             if (currentNode is not null && int.TryParse(currentNode, out int nodeIdNum) && ((nodeIdNum < 100 && nodeIdNum != 9) || nodeIdNum >= 50000))
@@ -459,31 +480,20 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                                     ["backend_usages"] = BackendData.Usages,
                                     ["comfy_output_node"] = currentNode,
                                     ["comfy_is_real"] = isReal,
-                                    ["comfy_img_type"] = $"{type}",
+                                    ["comfy_img_type"] = $"{mediaType}",
                                     ["comfy_event_id"] = eventId,
                                     ["comfy_index"] = index
                                 };
                             }
-                            takeOutput(new T2IEngine.ImageOutput() { Img = new Image(output[8..], type, formatLabel), IsReal = isReal, GenTimeMS = firstStep == 0 ? -1 : (Environment.TickCount64 - firstStep) });
+                            takeOutput(new T2IEngine.ImageOutput() { File = new Image(output[preBytes..], mediaType), IsReal = isReal, GenTimeMS = firstStep == 0 ? -1 : (Environment.TickCount64 - firstStep) });
                         }
                         else
                         {
-                            string dataType = formatLabel switch
-                            {
-                                "jpg" => "image/jpeg",
-                                "png" => "image/png",
-                                "bmp" => "image/bmp",
-                                "webp" => "image/webp",
-                                "gif" => "image/gif",
-                                "mp4" => "video/mp4",
-                                "webm" => "video/webm",
-                                _ => "image/jpeg"
-                            };
                             takeOutput(new JObject()
                             {
                                 ["batch_index"] = index == 0 || !int.TryParse(batchId, out int batchInt) ? batchId : batchInt + index,
                                 ["request_id"] = $"{user_input.UserRequestId}",
-                                ["preview"] = $"data:{dataType};base64," + Convert.ToBase64String(output, 8, output.Length - 8),
+                                ["preview"] = $"data:{mediaType.MimeType};base64,{Convert.ToBase64String(output, preBytes, output.Length - preBytes)}",
                                 ["overall_percent"] = (nodesDone + curPercent) / (float)expectedNodes,
                                 ["current_percent"] = curPercent
                             });
@@ -499,7 +509,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             JObject historyOut = await SendGet<JObject>($"history/{promptId}");
             if (!historyOut.Properties().IsEmpty())
             {
-                foreach (Image image in await GetAllImagesForHistory(historyOut[promptId], interrupt))
+                foreach (MediaFile file in await GetAllImagesForHistory(historyOut[promptId], interrupt))
                 {
                     if (Program.ServerSettings.AddDebugData)
                     {
@@ -512,9 +522,10 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                             ["comfy_output_history_prompt_id"] = promptId
                         };
                     }
-                    takeOutput(new T2IEngine.ImageOutput() { Img = image, IsReal = true, GenTimeMS = firstStep == 0 ? -1 : (Environment.TickCount64 - firstStep) });
+                    takeOutput(new T2IEngine.ImageOutput() { File = file, IsReal = true, GenTimeMS = firstStep == 0 ? -1 : (Environment.TickCount64 - firstStep) });
                 }
             }
+            await HttpClient.PostAsync($"{APIAddress}/history", new StringContent(new JObject() { ["delete"] = new JArray() { promptId } }.ToString()), Program.GlobalProgramCancel);
         }
         catch (Exception)
         {
@@ -538,46 +549,63 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
 
     public static AsciiMatcher CustomMetaKeyCleaner = new(AsciiMatcher.BothCaseLetters + AsciiMatcher.Digits + "_");
 
-    public static (string, int, int) ComfyRawWebsocketOutputToFormatLabel(byte[] output)
+    public static (MediaType, int, int, int) ComfyRawWebsocketOutputToFormatLabel(byte[] output)
     {
         int eventId = BinaryPrimitives.ReverseEndianness(BitConverter.ToInt32(output, 0));
-        int format = BinaryPrimitives.ReverseEndianness(BitConverter.ToInt32(output, 4));
-        int index = 0;
-        if (format > 2)
+        if (eventId == 4)
         {
-            index = (format >> 4) & 0xffff;
-            format &= 7;
-        }
-        string formatLabel;
-        if (eventId == 3)
-        {
-            formatLabel = "txt";
-        }
-        else if (eventId == 10)
-        {
-            formatLabel = format switch { 1 => "bmp", _ => "jpg" };
+            int metaLength = BinaryPrimitives.ReverseEndianness(BitConverter.ToInt32(output, 4));
+            string metadata = StringConversionHelper.UTF8Encoding.GetString(output, 8, metaLength);
+            JObject jmeta = Utilities.ParseToJson(metadata);
+            MediaType type = MediaType.ImageJpg;
+            if (jmeta.TryGetValue("mime_type", out JToken mimeType))
+            {
+                type = MediaType.TypesByMimeType.GetValueOrDefault($"{mimeType}", MediaType.ImageJpg);
+            }
+            int id = 0;
+            if (jmeta.TryGetValue("id", out JToken idTok) && idTok.Type == JTokenType.Integer)
+            {
+                id = idTok.Value<int>();
+            }
+            return (type, id, eventId, 8 + metaLength);
         }
         else
         {
-            formatLabel = format switch { 1 => "jpg", 2 => "png", 3 => "webp", 4 => "gif", 5 => "mp4", 6 => "webm", 7 => "mov", _ => "jpg" };
+            int format = BinaryPrimitives.ReverseEndianness(BitConverter.ToInt32(output, 4));
+            int index = 0;
+            if (format > 2)
+            {
+                index = (format >> 4) & 0xffff;
+                format &= 7;
+            }
+            MediaType type;
+            if (eventId == 3)
+            {
+                type = MediaType.TextTxt;
+            }
+            else if (eventId == 10)
+            {
+                type = format == 1 ? MediaType.ImageBmp : MediaType.ImageJpg;
+            }
+            else
+            {
+                type = format switch
+                {
+                    1 => MediaType.ImageJpg,
+                    2 => MediaType.ImagePng,
+                    3 => MediaType.ImageWebp,
+                    4 => MediaType.ImageGif,
+                    5 => MediaType.VideoMp4,
+                    6 => MediaType.VideoWebm,
+                    7 => MediaType.VideoMov,
+                    _ => MediaType.ImageJpg
+                };
+            }
+            return (type, index, eventId, 8);
         }
-        return (formatLabel, index, eventId);
     }
 
-    public static Image.ImageType ComfyFormatLabelToImageType(string formatLabel) => formatLabel switch
-    {
-        "jpg" => Image.ImageType.IMAGE,
-        "png" => Image.ImageType.IMAGE,
-        "bmp" => Image.ImageType.IMAGE,
-        "webp" => Image.ImageType.IMAGE,
-        "gif" => Image.ImageType.ANIMATION,
-        "mp4" => Image.ImageType.VIDEO,
-        "webm" => Image.ImageType.VIDEO,
-        "mov" => Image.ImageType.VIDEO,
-        _ => Image.ImageType.IMAGE
-    };
-
-    private async Task<Image[]> GetAllImagesForHistory(JToken output, CancellationToken interrupt)
+    private async Task<MediaFile[]> GetAllImagesForHistory(JToken output, CancellationToken interrupt)
     {
         if (Logs.MinimumLevel <= Logs.LogLevel.Verbose)
         {
@@ -621,7 +649,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                 outputFailures.Add($"Null output block (???)");
                 continue;
             }
-            async Task LoadImage(JObject outImage, Image.ImageType type)
+            async Task LoadImage(JObject outImage)
             {
                 string imType = "output";
                 string fname = outImage["filename"].ToString();
@@ -629,37 +657,35 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                 {
                     imType = "temp";
                 }
+                string url = $"filename={HttpUtility.UrlEncode(fname)}&type={imType}";
+                if (outImage.TryGetValue("subfolder", out JToken subFolder) && !string.IsNullOrWhiteSpace($"{subFolder}"))
+                {
+                    url += $"&subfolder={HttpUtility.UrlEncode($"{subFolder}")}"; // TODO: Wtf, comfy? Cursed api. Just use paths.
+                }
                 string ext = fname.AfterLast('.');
                 string format = (outImage.TryGetValue("format", out JToken formatTok) ? formatTok.ToString() : "") ?? "";
-                if (ext == "gif")
-                {
-                    type = Image.ImageType.ANIMATION;
-                }
-                else if (ext == "mp4" || ext == "mov" || ext == "webm" || format.StartsWith("video/"))
-                {
-                    type = Image.ImageType.VIDEO;
-                }
-                byte[] image = await(await HttpClient.GetAsync($"{APIAddress}/view?filename={HttpUtility.UrlEncode(fname)}&type={imType}", interrupt)).Content.ReadAsByteArrayAsync(interrupt);
-                if (image == null || image.Length == 0)
+                MediaType type = MediaType.GetByExtension(ext) ?? MediaType.TypesByMimeType.GetValueOrDefault(format) ?? MediaType.ImageJpg;
+                byte[] image = await(await HttpClient.GetAsync($"{APIAddress}/view?{url}", interrupt)).Content.ReadAsByteArrayAsync(interrupt);
+                if (image is null || image.Length == 0)
                 {
                     Logs.Error($"Invalid/null/empty image data from ComfyUI server for '{fname}', under {outData.ToDenseDebugString()}");
                     return;
                 }
-                outputs.Add(new Image(image, type, ext));
+                outputs.Add(new Image(image, type));
                 PostResultCallback(fname);
             }
             if (outData["images"] is not null)
             {
                 foreach (JToken outImage in outData["images"])
                 {
-                    await LoadImage(outImage as JObject, Image.ImageType.IMAGE);
+                    await LoadImage(outImage as JObject);
                 }
             }
             else if (outData["gifs"] is not null)
             {
                 foreach (JToken outGif in outData["gifs"])
                 {
-                    await LoadImage(outGif as JObject, Image.ImageType.ANIMATION);
+                    await LoadImage(outGif as JObject);
                 }
             }
             else
@@ -696,12 +722,10 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
         return [.. images];
     }
 
-    public static string CreateWorkflow(T2IParamInput user_input, Func<string, string> initImageFixer, string ModelFolderFormat = null, HashSet<string> features = null)
+    public static string GetRawWorkflowFrom(T2IParamInput input)
     {
         string workflow = null;
-        // note: gently break any standard embed with a space, *require* swarm format embeds, as comfy's raw syntax has unwanted behaviors
-        user_input.ProcessPromptEmbeds(x => $" embedding:{x.Replace("/", ModelFolderFormat)} ", p => p.Replace("embedding:", "embedding :", StringComparison.OrdinalIgnoreCase));
-        if (user_input.TryGet(ComfyUIBackendExtension.CustomWorkflowParam, out string customWorkflowName))
+        if (input.TryGet(ComfyUIBackendExtension.CustomWorkflowParam, out string customWorkflowName))
         {
             if (customWorkflowName.StartsWith("PARSED%"))
             {
@@ -717,11 +741,19 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                 workflow = flowObj["prompt"].ToString();
             }
         }
-        else if (user_input.TryGetRaw(ComfyUIBackendExtension.FakeRawInputType, out object workflowRaw))
+        else if (input.TryGetRaw(ComfyUIBackendExtension.FakeRawInputType, out object workflowRaw))
         {
             workflow = (string)workflowRaw;
         }
         workflow = workflow?.Replace("\"%%_COMFYFIXME_${", "${").Replace("}_ENDFIXME_%%\"", "}");
+        return workflow;
+    }
+
+    public static string CreateWorkflow(T2IParamInput user_input, Func<string, string> initImageFixer, string ModelFolderFormat = null, HashSet<string> features = null)
+    {
+        // note: gently break any standard embed with a space, *require* swarm format embeds, as comfy's raw syntax has unwanted behaviors
+        user_input.ProcessPromptEmbeds(x => $" embedding:{x.Replace("/", ModelFolderFormat)} ", p => p.Replace("embedding:", "embedding :", StringComparison.OrdinalIgnoreCase));
+        string workflow = GetRawWorkflowFrom(user_input);
         if (workflow is not null && !user_input.Get(T2IParamTypes.ControlNetPreviewOnly))
         {
             Logs.Verbose("Will fill a workflow...");
@@ -753,9 +785,9 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                     {
                         return model.ToString(ModelFolderFormat);
                     }
-                    else if (val is Image image)
+                    else if (val is MediaFile file)
                     {
-                        return image.AsBase64;
+                        return file.AsBase64;
                     }
                     else if (val is List<string> list)
                     {
@@ -805,7 +837,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                 filled ??= defVal;
                 if (Logs.MinimumLevel <= Logs.LogLevel.Verbose)
                 {
-                    Logs.Verbose($"Filled tag '{tag}' with '{filled}'");
+                    Logs.Verbose($"Filled tag '{tag}' with '{(filled.Length > 512 ? $"{filled[..512]}...": filled)}'");
                 }
                 return Utilities.EscapeJsonString(filled);
             }, false);
@@ -833,14 +865,14 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
         List<Action> completeSteps = [];
         string initImageFixer(string workflow) // This is a hack, backup for if Swarm nodes are missing
         {
-            void TryApply(string key, Image img, bool resize)
+            void TryApply(string key, ImageFile img, bool resize)
             {
                 int width = user_input.GetImageWidth(-1), height = user_input.GetImageHeight(-1);
                 if (width <= 0 || height <= 0)
                 {
                     resize = false;
                 }
-                Image fixedImage = resize ? img.Resize(width, height) : img;
+                ImageFile fixedImage = resize ? img.Resize(width, height) : img;
                 if (key.Contains("swarmloadimageb") || key.Contains("swarminputimage"))
                 {
                     user_input.InternalSet.ValuesInput[key] = fixedImage;
@@ -860,7 +892,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                     string fname = $"init_image_sui_backend_{BackendData.ID}_{id}.png";
                     MultipartFormDataContent content = new()
                     {
-                        { new ByteArrayContent(fixedImage.ImageData), "image", fname },
+                        { new ByteArrayContent(fixedImage.RawData), "image", fname },
                         { new StringContent("true"), "overwrite" }
                     };
                     HttpClient.PostAsync($"{APIAddress}/upload/image", content).Wait();
@@ -878,7 +910,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             foreach ((string key, object val) in new Dictionary<string, object>(user_input.InternalSet.ValuesInput))
             {
                 bool resize = !T2IParamTypes.TryGetType(key, out T2IParamType type, user_input) || type.ImageShouldResize;
-                if (val is Image img && !type.ImageAlwaysB64)
+                if (val is ImageFile img && !type.ImageAlwaysB64)
                 {
                     TryApply(key, img, resize);
                 }
@@ -910,6 +942,40 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                 step();
             }
         }
+    }
+
+    /// <inheritdoc/>
+    public override bool IsValidForThisBackend(T2IParamInput input)
+    {
+        return TryIsValid(input, NodeTypes);
+    }
+
+    /// <summary>
+    /// Implementation for <see cref="IsValidForThisBackend(T2IParamInput)"/>.
+    /// </summary>
+    public static bool TryIsValid(T2IParamInput input, HashSet<string> nodeTypes)
+    {
+        if (nodeTypes is null)
+        {
+            return true;
+        }
+        string workflowRaw = GetRawWorkflowFrom(input);
+        if (string.IsNullOrWhiteSpace(workflowRaw))
+        {
+            return true;
+        }
+        workflowRaw = StringConversionHelper.QuickSimpleTagFiller(workflowRaw, "${", "}", (tag) =>
+        {
+            return "null";
+        });
+        JObject workflow = Utilities.ParseToJson(workflowRaw);
+        JProperty refusalNode = workflow.Properties().FirstOrDefault(p => !nodeTypes.Contains($"{p.Value["class_type"]}"));
+        if (refusalNode is not null)
+        {
+            input.RefusalReasons.Add($"The custom workflow contains an unsupported node type '{refusalNode.Value["class_type"]}'.");
+            return false;
+        }
+        return true;
     }
 
     public Task<JType> SendGet<JType>(string url) where JType : class

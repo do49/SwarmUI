@@ -1,13 +1,14 @@
-import torch
-import struct
+import torch, struct, json
 from io import BytesIO
-import latent_preview
-import comfy
+import latent_preview, comfy
 from server import PromptServer
 from comfy.model_base import SDXL, SVD_img2vid, Flux, WAN21, Chroma
 from comfy import samplers
 import numpy as np
 from math import ceil
+from latent_preview import TAESDPreviewerImpl
+from comfy_execution.utils import get_executing_context
+from comfy_extras.nodes_flux import Flux2Scheduler
 
 def slerp(val, low, high):
     low_norm = low / torch.norm(low, dim=1, keepdim=True)
@@ -40,26 +41,49 @@ def swarm_fixed_noise(seed, latent_image, var_seed, var_seed_strength):
         noises.append(noise)
     return torch.stack(noises, dim=0)
 
+def get_preview_metadata():
+    executing_context = get_executing_context()
+    prompt_id = None
+    node_id = None
+    if executing_context is not None:
+        prompt_id = executing_context.prompt_id
+        node_id = executing_context.node_id
+    if prompt_id is None:
+        prompt_id = PromptServer.instance.last_prompt_id
+    if node_id is None:
+        node_id = PromptServer.instance.last_node_id
+    return {"node_id": node_id, "prompt_id": prompt_id, "display_node_id": node_id, "parent_node_id": node_id, "real_node_id": node_id} # display_node_id, parent_node_id, real_node_id? comfy_execution/progress.py has this.
+
 def swarm_send_extra_preview(id, image):
     server = PromptServer.instance
+    metadata = get_preview_metadata()
+    metadata["mime_type"] = "image/jpeg"
+    metadata["id"] = id
+    metadata_json = json.dumps(metadata).encode('utf-8')
     bytesIO = BytesIO()
-    num_data = 1 + (id * 16)
-    header = struct.pack(">I", num_data)
-    bytesIO.write(header)
     image.save(bytesIO, format="JPEG", quality=90, compress_level=4)
-    preview_bytes = bytesIO.getvalue()
-    server.send_sync(1, preview_bytes, sid=server.client_id)
+    image_bytes = bytesIO.getvalue()
+    combined_data = bytearray()
+    combined_data.extend(struct.pack(">I", len(metadata_json)))
+    combined_data.extend(metadata_json)
+    combined_data.extend(image_bytes)
+    server.send_sync(9999123, combined_data, sid=server.client_id)
 
 def swarm_send_animated_preview(id, images):
     server = PromptServer.instance
     bytesIO = BytesIO()
-    num_data = 3 + (id * 16)
-    header = struct.pack(">I", num_data)
-    bytesIO.write(header)
     images[0].save(bytesIO, save_all=True, duration=int(1000.0/6), append_images=images[1 : len(images)], lossless=False, quality=60, method=0, format='WEBP')
     bytesIO.seek(0)
-    preview_bytes = bytesIO.getvalue()
-    server.send_sync(1, preview_bytes, sid=server.client_id)
+    image_bytes = bytesIO.getvalue()
+    metadata = get_preview_metadata()
+    metadata["mime_type"] = "image/webp"
+    metadata["id"] = id
+    metadata_json = json.dumps(metadata).encode('utf-8')
+    combined_data = bytearray()
+    combined_data.extend(struct.pack(">I", len(metadata_json)))
+    combined_data.extend(metadata_json)
+    combined_data.extend(image_bytes)
+    server.send_sync(9999123, combined_data, sid=server.client_id)
 
 def calculate_sigmas_scheduler(model, scheduler_name, steps, sigma_min, sigma_max, rho):
     model_sampling = model.get_model_object("model_sampling")
@@ -76,7 +100,7 @@ def make_swarm_sampler_callback(steps, device, model, previews):
     def callback(step, x0, x, total_steps):
         pbar.update_absolute(step + 1, total_steps, None)
         if previewer:
-            if step == 0 or (step < 3 and x0.ndim == 5 and x0.shape[1] > 8):
+            if (step == 0 or (step < 3 and x0.ndim == 5 and x0.shape[1] > 8)) and not isinstance(previewer, TAESDPreviewerImpl):
                 x0 = x0.clone().cpu() # Sync copy to CPU for first few steps to prevent reading old data, more steps for videos. Future steps allow comfy to do its async non_blocky stuff.
             if x0.ndim == 5:
                 # video shape is [batch, channels, backwards time, width, height], for previews needs to be swapped to [forwards time, channels, width, height]
@@ -222,7 +246,7 @@ class SwarmKSampler:
                 "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
                 "cfg": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0, "step": 0.5, "round": 0.001}),
                 "sampler_name": (comfy.samplers.KSampler.SAMPLERS, ),
-                "scheduler": (["turbo", "align_your_steps", "ltxv", "ltxv-image"] + comfy.samplers.KSampler.SCHEDULERS, ),
+                "scheduler": (["turbo", "align_your_steps", "ltxv", "ltxv-image", "flux2"] + comfy.samplers.KSampler.SCHEDULERS, ),
                 "positive": ("CONDITIONING", ),
                 "negative": ("CONDITIONING", ),
                 "latent_image": ("LATENT", ),
@@ -269,6 +293,10 @@ class SwarmKSampler:
         elif scheduler == "ltx" or scheduler == "ltxv-image":
             from comfy_extras.nodes_lt import LTXVScheduler
             sigmas = LTXVScheduler().get_sigmas(steps, 2.05, 0.95, True, 0.1, latent_image if scheduler == "ltxv-image" else None)[0]
+        elif scheduler == "flux2":
+            width = latent_image["samples"].shape[-1]
+            height = latent_image["samples"].shape[-2]
+            sigmas = Flux2Scheduler.execute(steps, width * 16, height * 16).result[0]
         elif scheduler == "align_your_steps":
             if isinstance(model.model, SDXL):
                 model_type = "SDXL"

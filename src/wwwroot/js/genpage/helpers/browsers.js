@@ -48,14 +48,22 @@ class BrowserCallHelper {
  * Part of a browser tree.
  */
 class BrowserTreePart {
-    constructor(name, children, hasOpened, isOpen, fileData = null, fullPath = '') {
+    constructor(name, hasOpened, isOpen, fileData = null, fullPath = '') {
         this.name = name;
-        this.children = children;
+        this.children = {};
+        this.childrenKeys = [];
         this.hasOpened = hasOpened;
         this.isOpen = isOpen;
         this.fileData = fileData;
         this.fullPath = fullPath.startsWith('/') ? fullPath.substring(1) : fullPath;
         this.clickme = null;
+    }
+
+    addChild(name, part) {
+        if (!(name in this.children)) {
+            this.childrenKeys.push(name);
+        }
+        this.children[name] = part;
     }
 }
 
@@ -75,7 +83,7 @@ class GenPageBrowserClass {
         this.selected = null;
         this.extraHeader = extraHeader;
         this.navCaller = this.navigate.bind(this);
-        this.tree = new BrowserTreePart('', {}, false, true, null, '');
+        this.tree = new BrowserTreePart('', false, true, null, '');
         this.depth = localStorage.getItem(`browser_${id}_depth`) || defaultDepth;
         this.filter = localStorage.getItem(`browser_${id}_filter`) || '';
         this.folderTreeVerticalSpacing = '0';
@@ -94,8 +102,10 @@ class GenPageBrowserClass {
         this.chunksRendered = 0;
         this.rerenderPlanned = false;
         this.updatePendingSince = null;
-        this.wantsReupdate = false;
         this.noContentUpdates = false;
+        this.lastListCache = null;
+        this.runAfterUpdate = [];
+        this.refreshHandler = (callback) => callback();
         this.checkIsSmall();
     }
 
@@ -119,14 +129,6 @@ class GenPageBrowserClass {
             this.rerenderPlanned = false;
             this.rerender();
         }, timeout);
-    }
-
-    updateWithoutDup() {
-        if (this.updatePendingSince && new Date().getTime() - this.updatePendingSince < 5000) {
-            this.wantsReupdate = true;
-            return;
-        }
-        this.update();
     }
 
     /**
@@ -167,7 +169,14 @@ class GenPageBrowserClass {
                 return;
             }
             tree = tree.children[part];
-            if (!tree.isOpen) {
+            if (tree.fileData) {
+                tree.clickme(() => {
+                    this.noContentUpdates = false;
+                    this.rerender();
+                });
+                return;
+            }
+            else if (!tree.isOpen) {
                 tree.clickme(() => {
                     this.clickPath(path);
                 });
@@ -182,7 +191,8 @@ class GenPageBrowserClass {
      * Refreshes the browser view from source.
      */
     refresh() {
-        refreshParameterValues(true, () => {
+        this.refreshHandler(() => {
+            this.lastListCache = null;
             this.chunksRendered = 0;
             let path = this.folder;
             this.folder = '';
@@ -195,26 +205,44 @@ class GenPageBrowserClass {
     }
 
     /**
+     * Performs a 'light' refresh: cacheless update, but no server refresh call.
+     */
+    lightRefresh() {
+        this.lastListCache = null;
+        this.update();
+    }
+
+    /**
      * Updates/refreshes the browser view.
      */
     update(isRefresh = false, callback = null) {
+        if (this.updatePendingSince && new Date().getTime() - this.updatePendingSince < 5000) {
+            this.runAfterUpdate.push(() => this.update(isRefresh, callback));
+            return;
+        }
         this.updatePendingSince = new Date().getTime();
         if (isRefresh) {
-            this.tree = new BrowserTreePart('', {}, false, null, null, '');
+            this.tree = new BrowserTreePart('', false, null, null, '');
             this.contentDiv.scrollTop = 0;
         }
         let folder = this.folder;
-        this.listFoldersAndFiles(folder, isRefresh, (folders, files) => {
+        let parseContent = (folders, files) => {
+            this.lastListCache = { folder, folders, files };
             this.build(folder, folders, files);
             this.updatePendingSince = null;
             if (callback) {
                 setTimeout(() => callback(), 100);
             }
-            if (this.wantsReupdate) {
-                this.wantsReupdate = false;
-                this.update();
+            if (this.runAfterUpdate.length > 0) {
+                let first = this.runAfterUpdate.shift();
+                first();
             }
-        }, this.depth);
+        };
+        if (!isRefresh && this.lastListCache && this.lastListCache.folder == folder) {
+            parseContent(this.lastListCache.folders, this.lastListCache.files);
+            return;
+        }
+        this.listFoldersAndFiles(folder, isRefresh, parseContent, this.depth);
     }
 
     /**
@@ -273,8 +301,9 @@ class GenPageBrowserClass {
         if (path == '') {
             let copy = Object.assign({}, this.tree.children);
             this.tree.children = {};
+            this.tree.childrenKeys = [];
             for (let folder of folders) {
-                this.tree.children[folder] = copy[folder] || new BrowserTreePart(folder, {}, isFile, false, isFile ? this.getFileFor(folder) : null, folder);
+                this.tree.addChild(folder, copy[folder] || new BrowserTreePart(folder, isFile, false, isFile ? this.getFileFor(folder) : null, folder));
             }
             this.tree.hasOpened = true;
             return;
@@ -284,16 +313,16 @@ class GenPageBrowserClass {
         for (let part of parts) {
             parent = tree;
             if (!(part in parent.children)) {
-                parent.children[part] = new BrowserTreePart(part, {}, false, false, null, parent.fullPath + '/' + part);
+                parent.addChild(part, new BrowserTreePart(part, false, false, null, parent.fullPath + '/' + part));
             }
             tree = parent.children[part];
         }
         let lastName = parts[parts.length - 1];
         let copy = Object.assign({}, tree.children);
-        tree = new BrowserTreePart(lastName, {}, true, tree.isOpen, null, tree.fullPath);
-        parent.children[lastName] = tree;
+        tree = new BrowserTreePart(lastName, true, tree.isOpen, null, tree.fullPath);
+        parent.addChild(lastName, tree);
         for (let folder of folders) {
-            tree.children[folder] = copy[folder] || new BrowserTreePart(folder, {}, isFile, false, isFile ? this.getFileFor(tree.fullPath + '/' + folder) : null, tree.fullPath + '/' + folder);
+            tree.addChild(folder, copy[folder] || new BrowserTreePart(folder, isFile, false, isFile ? this.getFileFor(tree.fullPath + '/' + folder) : null, tree.fullPath + '/' + folder));
         }
     }
 
@@ -321,8 +350,9 @@ class GenPageBrowserClass {
         else if (tree.isOpen) {
             span.classList.add('browser-folder-tree-part-open');
             let subContainer = createDiv(`${this.id}-foldertree-${tree.name}-container`, 'browser-folder-tree-part-container');
-            for (let subTree of Object.values(tree.children)) {
-                this.buildTreeElements(subContainer, `${path}${subTree.name}/`, subTree, offset + 16, false);
+            for (let name of tree.childrenKeys) {
+                let subTree = tree.children[name];
+                this.buildTreeElements(subContainer, `${path}${name}/`, subTree, offset + 16, false);
             }
             container.appendChild(subContainer);
         }
@@ -448,7 +478,7 @@ class GenPageBrowserClass {
                 else {
                     div.style.width = `${factor + 1}rem`;
                     img.addEventListener('load', () => {
-                        let ratio = img.width / img.height;
+                        let ratio = img.naturalWidth / img.naturalHeight;
                         div.style.width = `${(ratio * factor) + 1}rem`;
                     });
                 }
@@ -612,7 +642,7 @@ class GenPageBrowserClass {
             formatSelector.addEventListener('change', () => {
                 this.format = formatSelector.value;
                 localStorage.setItem(`browser_${this.id}_format`, this.format);
-                this.updateWithoutDup();
+                this.update();
             });
             if (!this.showDisplayFormat) {
                 formatSelector.style.display = 'none';
@@ -628,7 +658,7 @@ class GenPageBrowserClass {
             depthInput.addEventListener('change', () => {
                 this.depth = depthInput.value;
                 localStorage.setItem(`browser_${this.id}_depth`, this.depth);
-                this.updateWithoutDup();
+                this.lightRefresh();
             });
             if (!this.showDepth) {
                 depthInput.parentElement.style.display = 'none';
@@ -645,7 +675,7 @@ class GenPageBrowserClass {
                     clearFilterBtn.style.display = 'none';
                 }
                 setTimeout(() => {
-                    this.updateWithoutDup();
+                    this.update();
                 }, 1);
             });
             if (!this.showFilter) {

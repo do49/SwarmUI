@@ -4,7 +4,7 @@
 
 *Formerly known as StableSwarmUI.*
 
-A Modular AI Image Generation Web-User-Interface, with an emphasis on making powertools easily accessible, high performance, and extensibility. Supports AI image models (*Stable Diffusion, Flux, etc.*), and AI video models (*LTX-V, Hunyuan Video, Cosmos, Wan, etc.*), with plans to support eg audio and more in the future.
+A Modular AI Image Generation Web-User-Interface, with an emphasis on making powertools easily accessible, high performance, and extensibility. Supports AI image models (*Stable Diffusion, Flux, Qwen Image, etc.*), and AI video models (*Wan, Hunyuan Video, etc.*), with plans to support eg audio and more in the future.
 
 ![ui-screenshot](.github/images/swarmui.jpg)
 
@@ -28,6 +28,10 @@ Key feature targets not yet implemented:
 - full detail "Current Model" display in UI, separate from the model selector (probably as a tab within the batch sidebar?)
 - LLM-assisted prompting (there's an extension for it, but LLM control should be natively supported)
 - convenient direct-distribution of Swarm as a program ([Tauri](https://tauri.app/), [Blazor Desktop](https://learn.microsoft.com/en-us/training/modules/build-blazor-hybrid/), or an Electron app?)
+
+# Donate
+
+SwarmUI is 100% free and open source forever. If you want to help make sure it keeps pace with the best despite my refusal to paywall access or shove ads down your throat, [donate to SwarmUI](https://patreon.com/swarmui)!
 
 # Try It On Google Colab
 

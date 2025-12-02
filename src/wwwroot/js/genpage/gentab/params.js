@@ -103,7 +103,7 @@ function getHtmlForParam(param, prefix) {
                     let pElem = getRequiredElementById(`${prefix}${param.id}`);
                     textPromptAddKeydownHandler(pElem);
                     textPromptInputHandle(pElem);
-                } : (param.view_type == 'big' ? () => dynamicSizeTextBox(getRequiredElementById(`${prefix}${param.id}`, 32)): null);
+                } : (param.view_type == 'big' ? () => dynamicSizeTextBox(getRequiredElementById(`${prefix}${param.id}`), 32, 50): null);
                 return {html: makeTextInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.default, param.view_type, param.description, param.toggleable, false, !param.no_popover) + pop, runnable: runnable};
             case 'decimal':
             case 'integer':
@@ -147,12 +147,26 @@ function getHtmlForParam(param, prefix) {
                 }
                 return {html: makeTextInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.default, param.view_type, param.description, param.toggleable, false, !param.no_popover) + pop};
             case 'model':
-                let modelList = param.values && param.values.length > 0 ? param.values : coreModelMap[param.subtype || 'Stable-Diffusion'];
-                modelList = modelList.map(m => cleanModelName(m));
-                return {html: makeDropdownInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, modelList, param.default, param.toggleable, !param.no_popover) + pop,
+                let subType = param.subtype || 'Stable-Diffusion';
+                let modelList = param.values && param.values.length > 0 ? param.values : modelsHelpers.listModelNames(subType);
+                let modelAltNames = [];
+                for (let i = 0; i < modelList.length; i++) {
+                    let model = modelsHelpers.getDataFor(subType, modelList[i]);
+                    if (!model) {
+                        modelAltNames[i] = escapeHtml(modelList[i]);
+                        continue;
+                    }
+                    modelList[i] = model.cleanName;
+                    modelAltNames[i] = model.cleanDropdown();
+                }
+                return {html: makeDropdownInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, modelList, param.default, param.toggleable, !param.no_popover, modelAltNames, false) + pop,
                     runnable: () => autoSelectWidth(getRequiredElementById(`${prefix}${param.id}`))};
             case 'image':
                 return {html: makeImageInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.toggleable, !param.no_popover) + pop};
+            case 'audio':
+                return {html: makeAudioInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.toggleable, !param.no_popover) + pop};
+            case 'video':
+                return {html: makeVideoInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.toggleable, !param.no_popover) + pop};
             case 'image_list':
                 return {html: makeImageInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.toggleable, !param.no_popover) + pop};
         }
@@ -410,17 +424,19 @@ function genInputs(delay_final = false) {
                 doToggleGroup(`input_group_content_${group}`);
             }
         }
+        let dependsHandled = [];
         for (let param of gen_param_types) {
             if (param.toggleable) {
                 doToggleEnable(`input_${param.id}`);
                 doToggleEnable(`preset_input_${param.id}`);
             }
-            if (param.group && param.group.toggles) {
-                let elem = document.getElementById(`input_${param.id}`);
-                if (elem) {
-                    let groupId = param.group.id;
-                    let groupToggler = document.getElementById(`input_group_content_${groupId}_toggle`);
-                    if (groupToggler) {
+            let elem = document.getElementById(`input_${param.id}`);
+            if (elem) {
+                let group = param.group;
+                while (group) {
+                    let groupId = group.id;
+                    if (group.toggles) {
+                        let groupToggler = document.getElementById(`input_group_content_${groupId}_toggle`);
                         function autoActivate() {
                             groupToggler.checked = true;
                             doToggleGroup(`input_group_content_${groupId}`);
@@ -431,6 +447,17 @@ function genInputs(delay_final = false) {
                             elem.addEventListener('change', autoActivate);
                         }, 1);
                     }
+                    group = group.parent;
+                }
+            }
+            if (param.depend_non_default && !dependsHandled.includes(param.depend_non_default)) {
+                dependsHandled.push(param.depend_non_default);
+                let otherParam = gen_param_types.find(p => p.id == param.depend_non_default);
+                let other = document.getElementById(`input_${otherParam.id}`);
+                if (other) {
+                    other.addEventListener('change', () => {
+                        scheduleParamUnsupportUpdate();
+                    });
                 }
             }
         }
@@ -610,7 +637,7 @@ function genInputs(delay_final = false) {
         }
         let inputInitImage = document.getElementById('input_initimage');
         if (inputInitImage && inputAspectRatio && inputWidth && inputHeight) {
-            let targetDiv = findParentOfClass(inputInitImage, 'auto-input').querySelector('.auto-image-input-label');
+            let targetDiv = findParentOfClass(inputInitImage, 'auto-input').querySelector('.auto-file-input-label');
             if (targetDiv) {
                 let button = document.createElement('button');
                 button.className = 'basic-button';
@@ -808,10 +835,6 @@ function genInputs(delay_final = false) {
         if (videoGroup && !currentBackendFeatureSet.includes('frameinterps')) {
             videoGroup.append(createDiv(`video_install_frameinterps`, 'keep_group_visible', `<button class="basic-button" onclick="installFeatureById('frame_interpolation', 'video_install_frameinterps')">Install Frame Interpolation</button>`));
         }
-        let advancedSamplingGroup = document.getElementById('input_group_content_advancedsampling');
-        if (advancedSamplingGroup && !currentBackendFeatureSet.includes('teacache')) {
-            advancedSamplingGroup.append(createDiv(`advancedsampling_install_teacache`, 'keep_group_visible', `<button class="basic-button" onclick="installFeatureById('teacache', 'advancedsampling_install_teacache')">Install TeaCache</button>`));
-        }
         for (let runnable of postParamBuildSteps) {
             runnable();
         }
@@ -873,7 +896,7 @@ function getGenInput(input_overrides = {}, input_preoverrides = {}) {
         if (parent && parent.dataset.disabled == 'true') {
             continue;
         }
-        let val = getInputVal(elem);
+        let val = getInputVal(elem, true);
         if (val != null) {
             input[type.id] = val;
         }
@@ -888,7 +911,7 @@ function getGenInput(input_overrides = {}, input_preoverrides = {}) {
                 addedImageArea.style.display = '';
                 let imgs = [...addedImageArea.querySelectorAll('.alt-prompt-image')].filter(c => c.tagName == "IMG");
                 if (imgs.length > 0) {
-                    input["promptimages"] = imgs.map(img => img.dataset.filedata).join('|');
+                    input["promptimages"] = imgs.map(img => img.dataset.filedata);
                 }
             }
         }
@@ -902,6 +925,9 @@ function getGenInput(input_overrides = {}, input_preoverrides = {}) {
             }
         }
     }
+    if (input['aspectratio'] == 'Custom') {
+        delete input['sidelength'];
+    }
     if (!input['vae'] || input['vae'] == 'Automatic') {
         input['automaticvae'] = true;
         delete input['vae'];
@@ -909,7 +935,7 @@ function getGenInput(input_overrides = {}, input_preoverrides = {}) {
     let revisionImageArea = getRequiredElementById('alt_prompt_image_area');
     let revisionImages = [...revisionImageArea.querySelectorAll('.alt-prompt-image')].filter(c => c.tagName == "IMG");
     if (revisionImages.length > 0) {
-        input["promptimages"] = revisionImages.map(img => img.dataset.filedata).join('|');
+        input["promptimages"] = revisionImages.map(img => img.dataset.filedata);
     }
     if (imageEditor.active) {
         extraMetadata["used_image_editor"] = "true";
@@ -941,8 +967,8 @@ function getGenInput(input_overrides = {}, input_preoverrides = {}) {
     return input;
 }
 
-function refreshParameterValues(strong = true, callback = null) {
-    genericRequest('TriggerRefresh', {strong: strong}, data => {
+function refreshParameterValues(strong = true, refreshType = null, callback = null) {
+    genericRequest('TriggerRefresh', {strong: strong, refreshType: refreshType}, data => {
         loadUserData();
         if (!gen_param_types) {
             return;
@@ -988,7 +1014,15 @@ function refreshParameterValues(strong = true, callback = null) {
                         let alt_name = alt_names && alt_names[i] ? alt_names[i] : value;
                         let selected = value == val ? ' selected="true"' : '';
                         let cleanName = htmlWithParen(alt_name);
-                        html += `<option data-cleanname="${cleanName}" value="${escapeHtmlNoBr(value)}"${selected}>${cleanName}</option>\n`;
+                        let simpleName = cleanName;
+                        if (param.type == "model") {
+                            let model = modelsHelpers.getDataFor(param.subtype, value);
+                            if (model) {
+                                cleanName = model.cleanDropdown();
+                                simpleName = escapeHtmlNoBr(model.cleanName);
+                            }
+                        }
+                        html += `<option data-cleanname="${escapeHtmlNoBr(cleanName)}" value="${escapeHtmlNoBr(value)}"${selected}>${simpleName}</option>\n`;
                     }
                     elem.innerHTML = html;
                     elem.value = val;
@@ -1031,8 +1065,8 @@ function setDirectParamValue(param, value, paramElem = null, forceDropdowns = fa
         $(paramElem).val(vals);
         $(paramElem).trigger('change');
     }
-    else if (param.type == "image" || param.type == "image_list") {
-        // do not edit images directly, this will just misbehave
+    else if (param.type == "image" || param.type == "image_list" || param.type == "audio" || param.type == "video") {
+        // do not edit raw data files directly, this will just misbehave
     }
     else if (paramElem.tagName == "SELECT") {
         if (![...paramElem.querySelectorAll('option')].map(o => o.value).includes(value)) {
@@ -1084,6 +1118,7 @@ function resetParamsToDefault(exclude = [], doDefaultPreset = true) {
         if (param.id != 'model' && !exclude.includes(param.id)) {
             let id = `input_${param.id}`;
             let elem = document.getElementById(id);
+            doTrigger = true;
             if (elem != null) {
                 setDirectParamValue(param, param.default, elem, false, false);
                 if (param.toggleable) {
@@ -1095,18 +1130,26 @@ function resetParamsToDefault(exclude = [], doDefaultPreset = true) {
                     triggerChangeFor(toggler);
                     continue;
                 }
-                if (param.group && param.group.toggles) {
-                    let toggler = document.getElementById(`input_group_content_${param.group.id}_toggle`);
-                    if (toggler) {
-                        if (!toggler.checked) {
-                            continue;
+                let group = param.group;
+                while (group) {
+                    if (group.toggles) {
+                        let toggler = document.getElementById(`input_group_content_${group.id}_toggle`);
+                        if (toggler) {
+                            if (!toggler.checked) {
+                                doTrigger = false;
+                            }
+                            else {
+                                toggler.checked = false;
+                                doToggleGroup(`input_group_content_${group.id}`);
+                                doTrigger = false;
+                            }
                         }
-                        toggler.checked = false;
-                        doToggleGroup(`input_group_content_${param.group.id}`);
-                        continue;
                     }
+                    group = group.parent;
                 }
-                triggerChangeFor(elem);
+                if (doTrigger) {
+                    triggerChangeFor(elem);
+                }
             }
         }
     }
@@ -1114,6 +1157,7 @@ function resetParamsToDefault(exclude = [], doDefaultPreset = true) {
     if (aspect) { // Fix resolution trick incase the reset broke it
         triggerChangeFor(aspect);
     }
+    clearPromptImages();
     currentModelChanged();
     clearPresets();
     let defaultPreset = getPresetByTitle('default');
@@ -1157,10 +1201,6 @@ function hideUnsupportableParams() {
     if (videoFrameInterpInstallButton && currentBackendFeatureSet.includes('frameinterps')) {
         videoFrameInterpInstallButton.remove();
     }
-    let teaCacheInstallButton = document.getElementById('advancedsampling_install_teacache');
-    if (teaCacheInstallButton && currentBackendFeatureSet.includes('teacache')) {
-        teaCacheInstallButton.remove();
-    }
     let filter = getRequiredElementById('main_inputs_filter').value.toLowerCase();
     let hideUnaltered = filter.includes('<unaltered>');
     if (hideUnaltered) {
@@ -1185,7 +1225,7 @@ function hideUnsupportableParams() {
             param.feature_missing = !supported;
             let show = supported && param.visible;
             let paramToggler = document.getElementById(`input_${param.id}_toggle`);
-            let isAltered = paramToggler ? paramToggler.checked : `${getInputVal(elem)}` != param.default;
+            let isAltered = paramToggler ? paramToggler.checked : `${getInputVal(elem)}` != `${param.default}`;
             let group = param.original_group || param.group;
             if (group && group.toggles && !getRequiredElementById(`input_group_content_${group.id}_toggle`).checked) {
                 isAltered = false;
@@ -1324,6 +1364,9 @@ function buildParameterList(params, groups) {
 
 /** Returns a copy of the parameter name, cleaned for ID format input. */
 function cleanParamName(name) {
+    if (name == null) {
+        return null;
+    }
     return name.toLowerCase().replaceAll(/[^a-z]/g, '');
 }
 

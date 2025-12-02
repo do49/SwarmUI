@@ -2,8 +2,8 @@
 class SelectedLora {
     constructor(name, weight, confinement, model) {
         this.name = name;
-        this.weight = weight || (model && model.lora_default_weight ? parseFloat(model.lora_default_weight) : null) || loraHelper.loraWeightPref[name] || 1;
-        this.confinement = confinement || (model && model.lora_default_confinement ? parseInt(model.lora_default_confinement) : null) || loraHelper.loraConfinementPref[name] || 0;
+        this.weight = weight === 0 ? 0 : (weight || (model && model.lora_default_weight ? parseFloat(model.lora_default_weight) : null) || loraHelper.loraWeightPref[name] || 1);
+        this.confinement = confinement === 0 ? 0 : (confinement || (model && model.lora_default_confinement ? parseInt(model.lora_default_confinement) : null) || loraHelper.loraConfinementPref[name] || 0);
         this.model = model;
     }
 
@@ -88,13 +88,13 @@ class LoraHelper {
         let loraInput = this.getLorasInput();
         let loraWeightsInput = this.getLoraWeightsInput();
         let loraConfinementInput = this.getLoraConfinementInput();
-        if (!loraInput || !loraWeightsInput || !loraConfinementInput) {
+        if (!loraInput || !loraWeightsInput) {
             this.rebuildUI();
             return;
         }
         let loraVals = this.getLoraParamSelections();
         let weightVals = loraWeightsInput.value.split(',');
-        let confinementVals = loraConfinementInput.value.split(',');
+        let confinementVals = loraConfinementInput ? loraConfinementInput.value.split(',') : [];
         for (let i = 0; i < loraVals.length; i++) {
             this.selected.push(new SelectedLora(loraVals[i], weightVals.length > i ? parseFloat(weightVals[i]) : null, confinementVals.length > i ? parseInt(confinementVals[i]) : null, null));
         }
@@ -115,7 +115,10 @@ class LoraHelper {
             else {
                 let div = createDiv(null, 'preset-in-list');
                 div.dataset.lora_name = lora.name;
-                div.innerText = cleanModelName(lora.name);
+                let nameSpan = document.createElement('span');
+                nameSpan.innerText = cleanModelName(lora.name);
+                nameSpan.className = 'lora-name';
+                div.appendChild(nameSpan);
                 let weightInput = document.createElement('input');
                 weightInput.className = 'lora-weight-input';
                 weightInput.type = 'number';
@@ -160,6 +163,73 @@ class LoraHelper {
                     this.selectLora(lora);
                     sdLoraBrowser.rebuildSelectedClasses();
                 });
+                let doShowLoraPopup = (isClick) => {
+                    let popovers = document.getElementsByClassName('sui-popover-visible');
+                    for (let popover of Array.from(popovers)) {
+                        if (popover.dataset.isClick == "true" && !isClick) {
+                            return;
+                        }
+                        popover.remove();
+                    }
+                    let model = sdLoraBrowser.models[lora.name] ?? sdLoraBrowser.models[lora.name + ".safetensors"];
+                    if (!model) {
+                        return;
+                    }
+                    let rect = div.getBoundingClientRect();
+                    let desc = sdLoraBrowser.describeModel(model);
+                    let image = document.createElement('img');
+                    let descblock = createDiv(null, 'model-descblock');
+                    let popup = createDiv('popover_lora_info', 'sui-popover model-block-hoverable model-block model-block-big');
+                    image.src = desc.image;
+                    image.className = 'model-preview-image';
+                    descblock.style.maxHeight = '15rem';
+                    descblock.style.overflowY = isClick ? 'auto' : 'hidden';
+                    descblock.style.scrollbarWidth = 'thin';
+                    descblock.innerHTML = desc.description;
+                    popup.dataset.loraName = lora.name;
+                    popup.dataset.isClick = isClick;
+                    popup.style.position = 'fixed';
+                    popup.style.padding = '0';
+                    popup.style.top = 'auto';
+                    popup.style.bottom = `${window.innerHeight - rect.top + 10}px`;
+                    popup.appendChild(image);
+                    popup.appendChild(descblock);
+                    document.body.appendChild(popup);
+                    let left = Math.min(rect.left, window.innerWidth - popup.offsetWidth - 10);
+                    popup.style.left = `${left}px`;
+                    popup.classList.add('sui-popover-visible');
+                    if (isClick) {
+                        uiImprover.sustainPopover = popup;
+                    }
+                    else {
+                        popup.style.pointerEvents = 'none';
+                    }
+                };
+                let hoverTimer = null;
+                let clearTimer = (hTimer) => {
+                    if (hTimer) {
+                        clearTimeout(hTimer);
+                        hoverTimer = null;
+                    }
+                };
+                nameSpan.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    clearTimer(hoverTimer);
+                    doShowLoraPopup(true);
+                });
+                nameSpan.addEventListener('mouseenter', (e) => {
+                    hoverTimer = setTimeout(() => {
+                        doShowLoraPopup(false);
+                    }, 300);
+                });
+                nameSpan.addEventListener('mouseleave', (e) => {
+                    clearTimer(hoverTimer);
+                    let popup = document.querySelector(`.sui-popover-visible[data-lora-name="${lora.name}"]`);
+                    if (popup && popup.dataset.isClick != "true") {
+                        popup.remove();
+                    }
+                });
                 div.appendChild(confinementInput);
                 div.appendChild(weightInput);
                 div.appendChild(removeButton);
@@ -191,7 +261,7 @@ class LoraHelper {
         let loraInput = this.getLorasInput();
         let loraWeightsInput = this.getLoraWeightsInput();
         let loraConfinementInput = this.getLoraConfinementInput();
-        if (!loraInput || !loraWeightsInput || !loraConfinementInput) {
+        if (!loraInput || !loraWeightsInput) {
             return;
         }
         let loraVals = this.selected.map(l => l.name);
@@ -240,7 +310,7 @@ class LoraHelper {
                 triggerChangeFor(toggler);
             }
         }
-        if (loraConfinementInput.value != confinementStr) {
+        if (loraConfinementInput && loraConfinementInput.value != confinementStr) {
             loraConfinementInput.value = confinementStr;
             triggerChangeFor(loraConfinementInput);
             let toggler = document.getElementById('input_lorasectionconfinement_toggle');
@@ -272,14 +342,15 @@ class LoraHelper {
         let selected = this.selected.find(l => l.name == name);
         if (selected) {
             this.selected = this.selected.filter(l => l.name != name);
+            modelPresetLinkManager.removePresetsFrom('LoRA', name);
         }
         else {
             this.selected.push(new SelectedLora(name, null, null, data));
+            modelPresetLinkManager.addPresetsFrom('LoRA', name);
         }
         this.rebuildParams();
         this.rebuildUI();
     }
-    
 }
 
 loraHelper = new LoraHelper();

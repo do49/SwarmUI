@@ -6,7 +6,7 @@ let lastImageDir = '';
 
 let lastModelDir = '';
 
-let num_current_gens = 0, num_models_loading = 0, num_live_gens = 0, num_backends_waiting = 0;
+let num_waiting_gens = 0, num_models_loading = 0, num_live_gens = 0, num_backends_waiting = 0;
 
 let shouldApplyDefault = false;
 
@@ -32,6 +32,8 @@ let mainGenHandler = new GenerateHandler();
 let pageTitleSuffix = document.title.split(' - ')[1];
 let curAutoTitle = "Page is loading...";
 
+let featureSetChangedCallbacks = [];
+
 function setPageTitle(newTitle) {
     document.title = `${newTitle} - ${pageTitleSuffix}`;
 }
@@ -56,15 +58,25 @@ let generatingPreviewsText = translatable('Generating live previews...');
 let waitingOnModelLoadText = translatable('waiting on model load');
 let generatingText = translatable('generating');
 
+function currentGenString(num_waiting_gens, num_models_loading, num_live_gens, num_backends_waiting) {
+    function autoBlock(num, text) {
+        if (num == 0) {
+            return '';
+        }
+        return `<span class="interrupt-line-part">${num} ${text.replaceAll('%', autoS(num))},</span> `;
+    }
+    return `${autoBlock(num_waiting_gens, 'current generation%')}${autoBlock(num_live_gens, 'running')}${autoBlock(num_backends_waiting, 'queued')}${autoBlock(num_models_loading, waitingOnModelLoadText.get())}`;
+}
+
 function updateCurrentStatusDirect(data) {
     if (data) {
-        num_current_gens = data.waiting_gens;
+        num_waiting_gens = data.waiting_gens;
         num_models_loading = data.loading_models;
         num_live_gens = data.live_gens;
         num_backends_waiting = data.waiting_backends;
     }
-    let total = num_current_gens + num_models_loading + num_live_gens + num_backends_waiting;
-    if (isGeneratingPreviews && num_current_gens <= getRequiredElementById('usersettings_maxsimulpreviews').value) {
+    let total = num_waiting_gens + num_models_loading + num_live_gens + num_backends_waiting;
+    if (isGeneratingPreviews && num_waiting_gens <= getRequiredElementById('usersettings_maxsimulpreviews').value) {
         total = 0;
     }
     getRequiredElementById('alt_interrupt_button').classList.toggle('interrupt-button-none', total == 0);
@@ -73,20 +85,14 @@ function updateCurrentStatusDirect(data) {
         oldInterruptButton.classList.toggle('interrupt-button-none', total == 0);
     }
     let elem = getRequiredElementById('num_jobs_span');
-    function autoBlock(num, text) {
-        if (num == 0) {
-            return '';
-        }
-        return `<span class="interrupt-line-part">${num} ${text.replaceAll('%', autoS(num))},</span> `;
-    }
     let timeEstimate = '';
     if (total > 0 && mainGenHandler.totalGensThisRun > 0) {
         let avgGenTime = mainGenHandler.totalGenRunTime / mainGenHandler.totalGensThisRun;
         let estTime = avgGenTime * total;
         timeEstimate = ` (est. ${durationStringify(estTime)})`;
     }
-    elem.innerHTML = total == 0 ? (isGeneratingPreviews ? generatingPreviewsText.get() : '') : `${autoBlock(num_current_gens, 'current generation%')}${autoBlock(num_live_gens, 'running')}${autoBlock(num_backends_waiting, 'queued')}${autoBlock(num_models_loading, waitingOnModelLoadText.get())} ${timeEstimate}...`;
-    let max = Math.max(num_current_gens, num_models_loading, num_live_gens, num_backends_waiting);
+    elem.innerHTML = total == 0 ? (isGeneratingPreviews ? generatingPreviewsText.get() : '') : `${currentGenString(num_waiting_gens, num_models_loading, num_live_gens, num_backends_waiting)} ${timeEstimate}...`;
+    let max = Math.max(num_waiting_gens, num_models_loading, num_live_gens, num_backends_waiting);
     setPageTitle(total == 0 ? curAutoTitle : `(${max} ${generatingText.get()}) ${curAutoTitle}`);
 }
 
@@ -197,7 +203,7 @@ function reviseBackendFeatureSet() {
     }
     doCompatFeature('stable-diffusion-v3', 'sd3');
     doCompatFeature('stable-cascade-v1', 'cascade');
-    doAnyArchFeature(['Flux.1-dev', 'hunyuan-video'], 'flux-dev');
+    doAnyArchFeature(['Flux.1-dev', 'Flux.2-dev', 'hunyuan-video'], 'flux-dev');
     doCompatFeature('stable-diffusion-xl-v1', 'sdxl');
     doAnyCompatFeature(['genmo-mochi-1', 'lightricks-ltx-video', 'hunyuan-video', 'nvidia-cosmos-1', `wan-21`, `wan-22`], 'text2video');
     for (let changer of featureSetChangers) {
@@ -221,6 +227,9 @@ function reviseBackendFeatureSet() {
     }
     if (anyChanged) {
         hideUnsupportableParams();
+        for (let callback of featureSetChangedCallbacks) {
+            callback();
+        }
     }
 }
 
@@ -364,8 +373,9 @@ function loadUserData(callback) {
             language = data.language;
         }
         allPresetsUnsorted = data.presets;
+        modelPresetLinkManager.loadFromServer(data.model_preset_links);
         sortPresets();
-        presetBrowser.update();
+        presetBrowser.lightRefresh();
         if (shouldApplyDefault) {
             shouldApplyDefault = false;
             let defaultPreset = getPresetByTitle('default');
@@ -381,23 +391,14 @@ function loadUserData(callback) {
 }
 
 function updateAllModels(models) {
-    coreModelMap = models;
-    allModels = models['Stable-Diffusion'];
-    let selector = getRequiredElementById('current_model');
-    let selectorVal = selector.value;
-    selector.innerHTML = '';
-    let emptyOption = document.createElement('option');
-    emptyOption.value = '';
-    emptyOption.innerText = '';
-    selector.appendChild(emptyOption);
-    for (let model of allModels) {
-        let option = document.createElement('option');
-        let clean = cleanModelName(model);
-        option.value = clean;
-        option.innerText = clean;
-        selector.appendChild(option);
+    simplifiedMap = {};
+    for (let key of Object.keys(models)) {
+        simplifiedMap[key] = models[key].map(model => {
+            return model[0];
+        });
     }
-    selector.value = selectorVal;
+    coreModelMap = simplifiedMap;
+    allModels = simplifiedMap['Stable-Diffusion'];
     pickle2safetensor_load();
     modelDownloader.reloadFolders();
 }
@@ -745,6 +746,7 @@ function genpageLoad() {
         imageHistoryBrowser.navigate('');
         initialModelListLoad();
         genericRequest('ListT2IParams', {}, data => {
+            modelsHelpers.loadClassesFromServer(data.models, data.model_compat_classes, data.model_classes);
             updateAllModels(data.models);
             wildcardHelpers.newWildcardList(data.wildcards);
             [rawGenParamTypesFromServer, rawGroupMapFromServer] = buildParameterList(data.list, data.groups);

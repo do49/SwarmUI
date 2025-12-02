@@ -390,7 +390,7 @@
 #alt_generate_button:hover,
 #alt_center_button:hover {
     background: color-mix(in srgb, var(--emphasis) 70%, white);
-    color: var(--button-foreground-hover);
+    color: var(--button-foreground-hover) !important;
 }
 
 #alt_center_button::after {
@@ -398,7 +398,7 @@
     padding: 0 2px;
 }
 
-#Text2Image .seed-button {
+.seed-button {
     width: 28px;
     height: 28px;
     font-size: 0px;

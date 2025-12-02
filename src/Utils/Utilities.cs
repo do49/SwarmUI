@@ -19,6 +19,7 @@ using SwarmUI.Text2Image;
 using System.Net.Sockets;
 using Microsoft.VisualBasic.FileIO;
 using Microsoft.AspNetCore.Cryptography.KeyDerivation;
+using SwarmUI.Media;
 
 namespace SwarmUI.Utils;
 
@@ -48,6 +49,17 @@ public static class Utilities
                 QuickGC();
             }
         };
+        if (Program.RequireControlPingEveryMS > 0)
+        {
+            Program.SlowTickEvent += () =>
+            {
+                if (Program.TimeLastRemoteControlPing + Program.RequireControlPingEveryMS < Environment.TickCount64)
+                {
+                    Logs.Error($"`require_control_within` is set, and a ping has not been received in the last {(Environment.TickCount64 - Program.TimeLastRemoteControlPing) / 1000} seconds, SwarmUI will now shut down due to lack of remote control.");
+                    Program.Shutdown();
+                }
+            };
+        }
         new Thread(TickLoop).Start();
     }
 
@@ -286,8 +298,11 @@ public static class Utilities
         return Task.WhenAny(tasks);
     }
 
+    /// <summary>Effectively-unlimited max receive length, for internal transfers. Set to 100 gigabytes.</summary>
+    public static long ExtraLargeMaxReceive = 100L * 1024 * 1024 * 1024;
+
     /// <summary>Receive raw binary data from a WebSocket.</summary>
-    public static async Task<byte[]> ReceiveData(this WebSocket socket, int maxBytes, CancellationToken limit)
+    public static async Task<byte[]> ReceiveData(this WebSocket socket, long maxBytes, CancellationToken limit)
     {
         byte[] buffer = new byte[8192];
         using MemoryStream ms = new();
@@ -296,7 +311,7 @@ public static class Utilities
         {
             result = await socket.ReceiveAsync(buffer, limit);
             ms.Write(buffer, 0, result.Count);
-            if (ms.Length > maxBytes)
+            if (ms.Length > maxBytes || ms.Length >= int.MaxValue)
             {
                 throw new IOException($"Received too much data! (over {maxBytes} bytes)");
             }
@@ -306,14 +321,14 @@ public static class Utilities
     }
 
     /// <summary>Receive raw binary data from a WebSocket.</summary>
-    public static async Task<byte[]> ReceiveData(this WebSocket socket, TimeSpan maxDuration, int maxBytes)
+    public static async Task<byte[]> ReceiveData(this WebSocket socket, TimeSpan maxDuration, long maxBytes)
     {
         using CancellationTokenSource cancel = TimedCancel(maxDuration);
         return await ReceiveData(socket, maxBytes, cancel.Token);
     }
 
     /// <summary>Receive JSON data from a WebSocket.</summary>
-    public static async Task<JObject> ReceiveJson(this WebSocket socket, int maxBytes, bool nullOnEmpty = false)
+    public static async Task<JObject> ReceiveJson(this WebSocket socket, long maxBytes, bool nullOnEmpty = false)
     {
         string raw = Encoding.UTF8.GetString(await ReceiveData(socket, maxBytes, Program.GlobalProgramCancel));
         if (nullOnEmpty && string.IsNullOrWhiteSpace(raw))
@@ -324,7 +339,7 @@ public static class Utilities
     }
 
     /// <summary>Receive JSON data from a WebSocket.</summary>
-    public static async Task<JObject> ReceiveJson(this WebSocket socket, TimeSpan maxDuration, int maxBytes, bool nullOnEmpty = false)
+    public static async Task<JObject> ReceiveJson(this WebSocket socket, TimeSpan maxDuration, long maxBytes, bool nullOnEmpty = false)
     {
         string raw = Encoding.UTF8.GetString(await ReceiveData(socket, maxDuration, maxBytes));
         if (nullOnEmpty && string.IsNullOrWhiteSpace(raw))
@@ -479,12 +494,12 @@ public static class Utilities
         return content;
     }
 
-    public static MultipartFormDataContent MultiPartFormContentDiscordImage(Image image, JObject jobj)
+    public static MultipartFormDataContent MultiPartFormContentDiscordFile(MediaFile file, JObject jobj)
     {
         MultipartFormDataContent content = [];
-        ByteArrayContent imageContent = new(image.ImageData);
-        imageContent.Headers.ContentType = new MediaTypeHeaderValue(image.MimeType());
-        content.Add(imageContent, "file", $"image.{image.Extension}");
+        ByteArrayContent fileContent = new(file.RawData);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue(file.Type.MimeType);
+        content.Add(fileContent, "file", $"image.{file.Type.Extension}");
         content.Add(JSONContent(jobj), "payload_json");
         return content;
     }
@@ -695,7 +710,7 @@ public static class Utilities
                 request.Headers.Add(key, value);
             }
         }
-        using HttpResponseMessage response = await UtilWebClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, Program.GlobalProgramCancel);
+        HttpResponseMessage response = await UtilWebClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, Program.GlobalProgramCancel);
         long length = response.Content.Headers.ContentLength ?? 0;
         ConcurrentQueue<byte[]> chunks = new();
         ConcurrentQueue<(long, long, long, bool)> progUpdates = new();
@@ -706,53 +721,91 @@ public static class Utilities
         using Stream dlStream = await response.Content.ReadAsStreamAsync();
         Task loadData = Task.Run(async () =>
         {
+            HttpResponseMessage workingResponse = response;
+            Stream workingStream = dlStream;
             try
             {
+                int tryCount = 0;
+                long totalRead = 0;
                 byte[] buffer = new byte[Math.Min(length + 1024, 1024 * 1024 * 64)]; // up to 64 megabytes, just grab as big a chunk as we can at a time
                 int nextOffset = 0;
                 while (true)
                 {
-                    using CancellationTokenSource delayCleanup = new();
-                    Task<int> readTask = Task.Run(async () => await dlStream.ReadAsync(buffer.AsMemory(nextOffset), combinedCancel.Token));
-                    Task waiting = Task.Delay(TimeSpan.FromMinutes(2), delayCleanup.Token);
-                    Task reading = Task.Run(async () => await readTask);
-                    Task first = await Task.WhenAny(waiting, reading);
-                    if (first == waiting)
+                    try
                     {
-                        Logs.Warning($"Download from '{altUrl}' has had no update for 2 minutes. Download may be failing. Will wait 3 more minutes and consider failed if it exceeds 5 total minutes.");
-                        Task waiting2 = Task.Delay(TimeSpan.FromMinutes(3), delayCleanup.Token);
-                        Task second = await Task.WhenAny(waiting2, reading);
-                        if (second == waiting2)
+                        using CancellationTokenSource delayCleanup = new();
+                        Task<int> readTask = Task.Run(async () => await workingStream.ReadAsync(buffer.AsMemory(nextOffset), combinedCancel.Token));
+                        Task waiting = Task.Delay(TimeSpan.FromMinutes(2), delayCleanup.Token);
+                        Task reading = Task.Run(async () => await readTask);
+                        Task first = await Task.WhenAny(waiting, reading);
+                        if (first == waiting)
+                        {
+                            Logs.Warning($"Download from '{altUrl}' has had no update for 2 minutes. Download may be failing. Will wait 3 more minutes and consider failed if it exceeds 5 total minutes.");
+                            Task waiting2 = Task.Delay(TimeSpan.FromMinutes(3), delayCleanup.Token);
+                            Task second = await Task.WhenAny(waiting2, reading);
+                            if (second == waiting2)
+                            {
+                                chunks.Enqueue(null);
+                                throw new SwarmReadableErrorException("Download timed out, 5 minutes with no new data over stream.");
+                            }
+                            Logs.Info($"Download progressed before timeout, continuing as normal (received {new MemoryNum(await readTask)}).");
+                        }
+                        delayCleanup.Cancel();
+                        int read = await readTask;
+                        if (read <= 0)
+                        {
+                            if (nextOffset > 0)
+                            {
+                                chunks.Enqueue(buffer[..nextOffset]);
+                                totalRead += nextOffset;
+                            }
+                            chunks.Enqueue(null);
+                            break;
+                        }
+                        if (nextOffset + read < 1024 * 1024 * 5)
+                        {
+                            nextOffset += read;
+                        }
+                        else
+                        {
+                            chunks.Enqueue(buffer[..(nextOffset + read)]);
+                            totalRead += nextOffset + read;
+                            nextOffset = 0;
+                        }
+                        if (cancel is not null && cancel.IsCancellationRequested)
                         {
                             chunks.Enqueue(null);
-                            throw new SwarmReadableErrorException("Download timed out, 5 minutes with no new data over stream.");
+                            break;
                         }
-                        Logs.Info($"Download progressed before timeout, continuing as normal (received {new MemoryNum(await readTask)}).");
                     }
-                    delayCleanup.Cancel();
-                    int read = await readTask;
-                    if (read <= 0)
+                    catch (Exception ex)
                     {
-                        if (nextOffset > 0)
+                        if (tryCount < 4 && totalRead > 0 && totalRead < length)
                         {
-                            chunks.Enqueue(buffer[..nextOffset]);
+                            Logs.Debug($"Download from '{altUrl}' failed in loadData with internal exception, (WILL RETRY): {ex.ReadableString()}");
+                            tryCount++;
+                            nextOffset = 0;
+                            workingStream.Dispose();
+                            workingStream = null;
+                            workingResponse.Dispose();
+                            request = new(HttpMethod.Get, url);
+                            if (headers is not null)
+                            {
+                                foreach ((string key, string value) in headers)
+                                {
+                                    request.Headers.Add(key, value);
+                                }
+                            }
+                            request.Headers.Range = new(totalRead, length);
+                            workingResponse = await UtilWebClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, Program.GlobalProgramCancel);
+                            if (workingResponse.StatusCode != HttpStatusCode.PartialContent)
+                            {
+                                throw new SwarmReadableErrorException($"Failed to download {altUrl} (expecting Partial range continue): got response code {(int)workingResponse.StatusCode} {workingResponse.StatusCode}");
+                            }
+                            workingStream = await workingResponse.Content.ReadAsStreamAsync();
+                            continue;
                         }
-                        chunks.Enqueue(null);
-                        break;
-                    }
-                    if (nextOffset + read < 1024 * 1024 * 5)
-                    {
-                        nextOffset += read;
-                    }
-                    else
-                    {
-                        chunks.Enqueue(buffer[..(nextOffset + read)]);
-                        nextOffset = 0;
-                    }
-                    if (cancel is not null && cancel.IsCancellationRequested)
-                    {
-                        chunks.Enqueue(null);
-                        break;
+                        throw;
                     }
                 }
             }
@@ -761,6 +814,11 @@ public static class Utilities
                 Logs.Error($"Download from '{altUrl}' failed in loadData with internal exception: {ex.ReadableString()}");
                 chunks.Enqueue(null);
                 throw;
+            }
+            finally
+            {
+                workingStream?.Dispose();
+                workingResponse?.Dispose();
             }
         });
         void removeFile()

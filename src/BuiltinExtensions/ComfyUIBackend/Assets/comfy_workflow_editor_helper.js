@@ -11,17 +11,24 @@ let comfyHasTriedToLoad = false;
 
 let comfyAltSaveNodes = ['ADE_AnimateDiffCombine', 'VHS_VideoCombine', 'SaveAnimatedWEBP', 'SaveAnimatedPNG', 'SwarmSaveAnimatedWebpWS', 'SwarmSaveAnimationWS'];
 
-let swarmComfyInjectedHeaderSpacer = null;
+let swarmComfyInjectedHeaderSpacer = null, swarmComfySideToolbar = null, swarmComfySidePanel = null, swarmComfyBreadcrumbs = null;
+
+let swarmComfyHasPinia = false;
 
 /** Tries to load the ComfyUI workflow frame. */
 function comfyTryToLoad() {
     if (hasComfyLoaded) {
         return;
     }
+    let oldSpinner = document.getElementById('comfy_workflow_loadspinner');
+    if (oldSpinner) {
+        oldSpinner.remove();
+    }
     hasComfyLoaded = true;
     comfyButtonsArea.style.display = 'block';
     let container = getRequiredElementById('comfy_workflow_frameholder');
-    container.innerHTML = `<iframe class="comfy_workflow_frame" id="comfy_workflow_frame" src="ComfyBackendDirect/" onload="comfyOnLoadCallback()"></iframe>`;
+    container.innerHTML = `<div id="comfy_workflow_loadspinner" class="loading-spinner"><div class="loadspin1"></div><div class="loadspin2"></div><div class="loadspin3"></div></div><iframe class="comfy_workflow_frame" id="comfy_workflow_frame" src="ComfyBackendDirect/" style="visibility:hidden;" onload="comfyOnLoadCallback()" allowtransparency="true"></iframe>`;
+    uiImprover.runLoadSpinner(getRequiredElementById('comfy_workflow_loadspinner'));
 }
 
 /** Returns the ComfyUI workflow frame (or errors if not present). */
@@ -32,6 +39,11 @@ function comfyFrame() {
 /** Returns the ComfyUI Vue app object wrapper. */
 function comfyVueApp() {
     return comfyFrame()?.contentWindow?.document?.querySelector('[data-v-app]')?.__vue_app__;
+}
+
+/** Returns the ComfyUI Vue app Pinia object. */
+function comfyVuePinia() {
+    return comfyVueApp()?.config?.globalProperties?.$pinia;
 }
 
 /** Returns the ComfyUI Vue app i18n object. */
@@ -67,6 +79,7 @@ function comfyFixMenuLocation() {
     let swarmComfyMenu = getRequiredElementById('comfy_workflow_buttons_actual');
     let bodyTop = frame.contentWindow.document.querySelector('.comfyui-body-top');
     let bodyTopMenu = bodyTop ? bodyTop.querySelector('.comfyui-menu') : null;
+    let tabsContainer = frame.contentWindow.document.querySelector('.workflow-tabs-container');
     if (bodyTopMenu) {
         let logo = bodyTopMenu.querySelector('.comfyui-logo-wrapper') || bodyTopMenu.querySelector('.comfyui-logo');
         if (logo && !logo.parentElement.querySelector('.swarm-injected-header-spacer')) {
@@ -76,26 +89,58 @@ function comfyFixMenuLocation() {
             space.style.width = `${offsetTarget}px`;
             space.dataset.offsetTarget = offsetTarget;
             logo.parentElement.insertBefore(space, logo.nextSibling);
+            if (!swarmComfyInjectedHeaderSpacer && localStorage.getItem('comfy_buttons_closed')) {
+                setTimeout(() => {
+                    comfyToggleButtonsVisible();
+                }, 100);
+            }
             swarmComfyInjectedHeaderSpacer = space;
         }
         swarmComfyMenu.style.top = `${logo.offsetTop}px`;
         swarmComfyMenu.style.left = `${logo.offsetLeft + logo.offsetWidth}px`;
     }
+    else if (tabsContainer) {
+        let child = tabsContainer.querySelector('.flex');
+        if (child && !child.querySelector('.swarm-injected-header-spacer')) {
+            let space = document.createElement('span');
+            space.className = 'swarm-injected-header-spacer';
+            let offsetTarget = (swarmComfyMenu.offsetWidth < 5 ? 296 : swarmComfyMenu.offsetWidth);
+            space.style.width = `${offsetTarget}px`;
+            space.style.marginRight = '15px';
+            space.dataset.offsetTarget = offsetTarget;
+            child.prepend(space);
+            if (!swarmComfyInjectedHeaderSpacer && localStorage.getItem('comfy_buttons_closed')) {
+                setTimeout(() => {
+                    comfyToggleButtonsVisible();
+                }, 100);
+            }
+            swarmComfyInjectedHeaderSpacer = space;
+        }
+        swarmComfyMenu.style.top = `${tabsContainer.offsetTop}px`;
+        swarmComfyMenu.style.left = `${tabsContainer.offsetLeft + 5}px`;
+    }
     else {
-        swarmComfyMenu.style.left = undefined;
-        swarmComfyMenu.style.top = '1rem';
+        swarmComfyMenu.style.left = '5px';
+        swarmComfyMenu.style.top = '0';
         let menu = frame.contentWindow.document.querySelector('.comfy-menu');
         if (menu) {
             let rect = menu.getBoundingClientRect();
             if (rect.x < 300 && rect.y < 120) {
-                console.log(`Comfy menu was behind the Swarm menu at ${rect.x} x ${rect.y}, fixing with a downward offset...`);
                 menu.style.top = '150px';
             }
         }
     }
-    let sidePanelContainer = frame.contentWindow.document.querySelector('.side-bar-panel');
-    if (sidePanelContainer) {
-        sidePanelContainer.style.paddingTop = '60px';
+    swarmComfySidePanel = frame.contentWindow.document.querySelector('.side-bar-panel');
+    if (swarmComfySidePanel) {
+        swarmComfySidePanel.style.paddingTop = '60px';
+    }
+    swarmComfySideToolbar = frame.contentWindow.document.querySelector('.side-toolbar-container')?.querySelector('.side-tool-bar-container');
+    if (swarmComfySideToolbar) {
+        swarmComfySideToolbar.style.paddingTop = '60px';
+    }
+    swarmComfyBreadcrumbs = frame.contentWindow.document.querySelector('.p-breadcrumb-list');
+    if (swarmComfyBreadcrumbs) {
+        swarmComfyBreadcrumbs.style.paddingLeft = '250px';
     }
     // Comfy frontend added an aggro warning if frontend isn't fully up to date, but Swarm keeps it behind because it so often breaks on latest
     // so let's de-aggro the message a bit.
@@ -108,6 +153,18 @@ function comfyFixMenuLocation() {
             }
         }
     }, 100);
+    if (!swarmComfyHasPinia) {
+        let pinia = comfyVuePinia();
+        if (pinia) {
+            let store = pinia._s.get('workspace');
+            store.$subscribe((mutation, state) => {
+                setTimeout(() => {
+                    comfyFixMenuLocation();
+                }, 100);
+            });
+            swarmComfyHasPinia = true;
+        }
+    }
 }
 
 setTimeout(comfyFixMenuLocation, 10 * 1000);
@@ -121,6 +178,7 @@ let comfyTryAgain = translatable(`Try Again?`);
  * Callback triggered when the ComfyUI workflow frame loads.
  */
 function comfyOnLoadCallback() {
+    comfyReloadObjectInfo(true);
     if (comfyFrame().contentWindow.document.body.getElementsByClassName('comfy-failed-to-load').length == 1) {
         hasComfyLoaded = false;
         comfyButtonsArea.style.display = 'none';
@@ -151,6 +209,11 @@ function comfyOnLoadCallback() {
                     return await origRefreshFunc();
                 };
                 app.swarmHasReplacedRefresh = true;
+            }
+            comfyFrame().style.visibility = 'visible';
+            let spinner = document.getElementById('comfy_workflow_loadspinner');
+            if (spinner) {
+                spinner.remove();
             }
             comfyFixMenuLocation();
             clearInterval(comfyRefreshControlInterval);
@@ -217,7 +280,10 @@ function comfyOnLoadCallback() {
 /**
  * Callback when params refresh, to re-assign object_info.
  */
-function comfyReloadObjectInfo() {
+function comfyReloadObjectInfo(needed = false) {
+    if (!needed && !comfyObjectData && !gen_param_types.some(p => p.revalueGetter)) {
+        return;
+    }
     let resolve = undefined;
     let promise = new Promise(r => { resolve = r });
     getJsonDirect('ComfyBackendDirect/object_info', (_, data) => {
@@ -285,7 +351,7 @@ document.addEventListener('mouseup', function (e) {
 /**
  * Builds a set of pseudo-parameters for the current Comfy workflow (async) then calls a callback with the parameter set object, the API workflow, and a list of retained default parameters, as callback(params, workflow, retained).
  */
-function comfyBuildParams(callback) {
+function comfyBuildParams(requireSave, callback) {
     comfyGetPromptAndWorkflow((workflow, prompt) => {
         function getFreeIdStartingAt(start) {
             let id = start;
@@ -400,7 +466,7 @@ function comfyBuildParams(callback) {
                 continue;
             }
             if (node.class_type == 'SaveImage') {
-                if ('SwarmSaveImageWS' in comfyObjectData) {
+                if ('SwarmSaveImageWS' in comfyObjectData && requireSave) {
                     node.class_type = 'SwarmSaveImageWS';
                     delete node.inputs['filename_prefix'];
                 }
@@ -432,13 +498,13 @@ function comfyBuildParams(callback) {
                 }
             }
         }
-        if (!hasSaves && previewNodes.length > 0) {
+        if (!hasSaves && previewNodes.length > 0 && requireSave) {
             prompt[previewNodes[0]].class_type = 'SwarmSaveImageWS';
             saveNodeId = previewNodes[0];
             hasSaves = true;
             previewNodes = previewNodes.slice(1);
         }
-        if (hasSaves && parseInt(saveNodeId) < 200) {
+        if (hasSaves && parseInt(saveNodeId) < 200 && requireSave) {
             let newSaveId = getFreeIdStartingAt(200);
             prompt[newSaveId] = prompt[saveNodeId];
             delete prompt[saveNodeId];
@@ -461,7 +527,7 @@ function comfyBuildParams(callback) {
                 }
             }
         }
-        if (!hasSaves) {
+        if (!hasSaves && requireSave) {
             showError('ComfyUI Workflow must have at least one SaveImage node!');
             document.getElementById('maintab_comfyworkflow').click();
             return;
@@ -530,10 +596,16 @@ function comfyBuildParams(callback) {
                                 let data = comfyObjectData[remoteNode.class_type];
                                 if (data) {
                                     if (remoteInput in data.input.required) {
-                                        values = data.input.required[remoteInput][0];
+                                        values = data.input.required[remoteInput];
                                     }
                                     else if (remoteInput in data.input.optional) {
-                                        values = data.input.optional[remoteInput][0];
+                                        values = data.input.optional[remoteInput];
+                                    }
+                                    if (values && values.length > 1 && values[0] == 'COMBO' && 'options' in values[1]) {
+                                        values = values[1].options;
+                                    }
+                                    else {
+                                        values = values[0];
                                     }
                                 }
                             }
@@ -541,6 +613,8 @@ function comfyBuildParams(callback) {
                     break;
                     case 'SwarmInputBoolean': type = 'boolean'; doFixMe = true; break;
                     case 'SwarmInputImage': type = 'image'; break;
+                    case 'SwarmInputAudio': type = 'audio'; break;
+                    case 'SwarmInputVideo': type = 'video'; break;
                     default: throw new Error(`Unknown SwarmInput type ${node.class_type}`);
                 }
                 let inputIdDirect = node.inputs['raw_id'] || cleanParamName(node.inputs['title']);
@@ -658,9 +732,9 @@ function comfyBuildParams(callback) {
                         if (paramDataRaw && paramDataRaw[0] == 'INT' && paramDataRaw.length == 2) {
                             type = 'integer';
                             view_type = 'big';
-                            min = paramDataRaw[1].min;
-                            max = paramDataRaw[1].max;
-                            step = 1;
+                            min = paramDataRaw[1].min ?? min;
+                            max = paramDataRaw[1].max ?? max;
+                            step = paramDataRaw[1].step ?? 1;
                             if (inputId == 'batch_size' && getUserSetting('resetbatchsizetoone') && !claimedByPrimitives.includes('batchsize')) {
                                 val = 1;
                             }
@@ -668,9 +742,9 @@ function comfyBuildParams(callback) {
                         else if (paramDataRaw && paramDataRaw[0] == 'FLOAT' && paramDataRaw.length == 2) {
                             type = 'decimal';
                             view_type = 'slider';
-                            min = paramDataRaw[1].min;
-                            max = paramDataRaw[1].max;
-                            step = (max - min) * 0.01;
+                            min = paramDataRaw[1].min ?? min;
+                            max = paramDataRaw[1].max ?? max;
+                            step = paramDataRaw[1].step ?? ((max - min) * 0.01);
                         }
                         else {
                             type = 'decimal';
@@ -900,7 +974,7 @@ function comfyBuildParams(callback) {
  * Updates the parameter list to match the currently ComfyUI workflow.
  */
 function replaceParamsToComfy() {
-    comfyBuildParams((params, prompt, retained, paramVal, workflow) => {
+    comfyBuildParams(true, (params, prompt, retained, paramVal, workflow) => {
         setComfyWorkflowInput(params, retained, paramVal, true);
     });
 }
@@ -1093,7 +1167,7 @@ function comfySaveModalSaveNow() {
     }
     $('#comfy_workflow_save_modal').modal('hide');
     comfyNoticeMessage("Saving...");
-    comfyBuildParams((params, prompt_text, retained, paramVal, workflow) => {
+    comfyBuildParams(false, (params, prompt_text, retained, paramVal, workflow) => {
         params = JSON.parse(JSON.stringify(params));
         delete params.comfyworkflowparammetadata;
         delete params.comfyworkflowraw;
@@ -1187,6 +1261,16 @@ function comfyToggleButtonsVisible() {
         if (swarmComfyInjectedHeaderSpacer) {
             swarmComfyInjectedHeaderSpacer.style.width = `${swarmComfyInjectedHeaderSpacer.dataset.offsetTarget}px`;
         }
+        if (swarmComfySidePanel) {
+            swarmComfySidePanel.style.paddingTop = '60px';
+        }
+        if (swarmComfySideToolbar) {
+            swarmComfySideToolbar.style.paddingTop = '60px';
+        }
+        if (swarmComfyBreadcrumbs) {
+            swarmComfyBreadcrumbs.style.paddingLeft = '250px';
+        }
+        localStorage.removeItem('comfy_buttons_closed');
     }
     else {
         area.style.display = 'none';
@@ -1195,6 +1279,16 @@ function comfyToggleButtonsVisible() {
         if (swarmComfyInjectedHeaderSpacer) {
             swarmComfyInjectedHeaderSpacer.style.width = `30px`;
         }
+        if (swarmComfySidePanel) {
+            swarmComfySidePanel.style.paddingTop = '0';
+        }
+        if (swarmComfySideToolbar) {
+            swarmComfySideToolbar.style.paddingTop = '0';
+        }
+        if (swarmComfyBreadcrumbs) {
+            swarmComfyBreadcrumbs.style.paddingLeft = '0';
+        }
+        localStorage.setItem('comfy_buttons_closed', 'true');
     }
 }
 
@@ -1211,14 +1305,12 @@ function comfyImportWorkflow() {
 
 getRequiredElementById('maintab_comfyworkflow').addEventListener('click', comfyTryToLoad);
 
-backendsRevisedCallbacks.push(() => {
-    let hasAny = Object.values(backends_loaded).filter(x => x.type.startsWith('comfyui_')
-        || x.type == 'swarmswarmbackend' // TODO: Actually check if the backend has a comfy instance rather than just assuming swarmback==comfy
-        ).length > 0;
+featureSetChangedCallbacks.push(() => {
+    let hasAny = currentBackendFeatureSet.includes('comfyui');
     getRequiredElementById('maintab_comfyworkflow').style.display = hasAny ? 'block' : 'none';
     if (hasAny && !comfyHasTriedToLoad) {
         comfyHasTriedToLoad = true;
-        comfyReloadObjectInfo();
+        comfyReloadObjectInfo(false);
     }
 });
 

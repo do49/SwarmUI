@@ -69,6 +69,13 @@ function enableSliderForBox(div) {
 }
 
 function showError(message) {
+    let excludeErrorMessages = (typeof getUserSetting == 'function' ? getUserSetting('ui.HideErrorMessages', '') : '').split('|').map(x => x.trim());
+    for (let excludeMessage of excludeErrorMessages) {
+        if (excludeMessage && message.includes(excludeMessage)) {
+            console.log(`Error message ${message} contains excluded message ${excludeMessage}, not showing.`);
+            return;
+        }
+    }
     let container = getRequiredElementById('center_toast');
     let box = getRequiredElementById('error_toast_box');
     getRequiredElementById('error_toast_content').innerText = message;
@@ -297,10 +304,9 @@ function internalSiteJsGetUserSetting(name, defaultValue) {
 
 function textPromptAddKeydownHandler(elem) {
     let shiftText = (up) => {
-        let selStart = elem.selectionStart;
-        let selEnd = elem.selectionEnd;
+        let [selStart, selEnd] = getTextSelRange(elem);
         if (selStart == selEnd) {
-            let simpleText = elem.value;
+            let simpleText = getTextContent(elem);
             for (let char of ['\n', '\t', ',', '.']) {
                 simpleText = simpleText.replaceAll(char, ' ');
             }
@@ -319,9 +325,10 @@ function textPromptAddKeydownHandler(elem) {
                 selEnd = simpleText.length;
             }
         }
-        let before = elem.value.substring(0, selStart);
-        let after = elem.value.substring(selEnd);
-        let mid = elem.value.substring(selStart, selEnd);
+        let text = getTextContent(elem);
+        let before = text.substring(0, selStart);
+        let after = text.substring(selEnd);
+        let mid = text.substring(selStart, selEnd);
         if (mid.trim() == "") {
             return;
         }
@@ -366,20 +373,18 @@ function textPromptAddKeydownHandler(elem) {
         strength += up ? 0.1 : -0.1;
         strength = `${formatNumberClean(strength, 5)}`;
         if (strength == "1") {
-            elem.value = `${before}${mid}${after}`;
-            elem.selectionStart = before.length;
-            elem.selectionEnd = before.length + mid.length;
+            setTextContent(elem, `${before}${mid}${after}`);
+            setTextSelRange(elem, before.length, before.length + mid.length);
         }
         else {
-            elem.value = `${before}(${mid}:${strength})${after}`;
-            elem.selectionStart = before.length + 1;
-            elem.selectionEnd = before.length + mid.length + 1;
+            setTextContent(elem, `${before}(${mid}:${strength})${after}`);
+            setTextSelRange(elem, before.length + 1, before.length + mid.length + 1);
         }
         triggerChangeFor(elem);
     }
-    function moveCommaSeparatedElement(left) {
-        let cursor = elem.selectionStart, cursorEnd = elem.selectionEnd;
-        let parts = elem.value.split(',');
+    let moveCommaSeparatedElement = (left) => {
+        let [cursor, cursorEnd] = getTextSelRange(elem);
+        let parts = getTextContent(elem).split(',');
         let textIndex = 0;
         let index = -1;
         for (let i = 0; i < parts.length; i++) {
@@ -410,9 +415,8 @@ function textPromptAddKeydownHandler(elem) {
             }
             newValue += parts[i];
         }
-        elem.value = newValue;
-        elem.selectionStart = newCursor;
-        elem.selectionEnd = newCursor + (cursorEnd - cursor);
+        setTextContent(elem, newValue);
+        setTextSelRange(elem, newCursor, newCursor + (cursorEnd - cursor));
         triggerChangeFor(elem);
     }
     elem.addEventListener('keydown', (e) => {
@@ -486,60 +490,121 @@ function doToggleEnable(id) {
     if (typeof scheduleParamUnsupportUpdate == 'function') {
         scheduleParamUnsupportUpdate();
     }
+    triggerChangeFor(toggler);
 }
 
 function getToggleHtml(toggles, id, name, extraClass = '', func = 'doToggleEnable') {
     return toggles ? `<span class="form-check form-switch toggle-switch display-inline-block${extraClass}"><input class="auto-slider-toggle form-check-input" type="checkbox" id="${id}_toggle" title="Enable/disable ${name}" onclick="${func}('${id}')" onchange="${func}('${id}')" autocomplete="off"><div class="auto-slider-toggle-content"></div></span>` : '';
 }
 
-let loadImageFileDedup = false;
+let loadMediaFileDedup = false;
 
-function load_image_file(elem) {
-    if (loadImageFileDedup) {
+function clearMediaFileInput(elem) {
+    let parent = findParentOfClass(elem, 'auto-input');
+    let preview = parent.querySelector('.auto-input-preview');
+    let label = parent.querySelector('.auto-file-input-filename');
+    delete elem.dataset.filedata;
+    label.textContent = "";
+    preview.innerHTML = '';
+    elem.value = '';
+    loadMediaFileDedup = true;
+    triggerChangeFor(elem);
+    loadMediaFileDedup = false;
+}
+
+function setMediaFileInput(elem, file, type) {
+    if (!file) {
+        clearMediaFileInput(elem);
+        return;
+    }
+    let parent = findParentOfClass(elem, 'auto-input');
+    let preview = parent.querySelector('.auto-input-preview');
+    let label = parent.querySelector('.auto-file-input-filename');
+    let name = file.name;
+    if (name.length > 30) {
+        name = `${name.substring(0, 27)}...`;
+    }
+    let longName = file.name.length > 500 ? file.name.substring(0, 150) + '...' : file.name;
+    label.textContent = name;
+    let reader = new FileReader();
+    reader.addEventListener("load", () => {
+        setMediaFileDirect(elem, reader.result, type, name, longName);
+    }, false);
+    reader.readAsDataURL(file);
+}
+
+function setMediaFileDirect(elem, src, type, name, longName = null, callback = null) {
+    let parent = findParentOfClass(elem, 'auto-input');
+    let preview = parent.querySelector('.auto-input-preview');
+    let label = parent.querySelector('.auto-file-input-filename');
+    elem.dataset.filedata = src;
+    let button = `<button class="interrupt-button auto-input-remove-button" title="Remove ${type}">&times;</button>`;
+    let img;
+    if (type == 'image') {
+        preview.innerHTML = `${button}<img alt="Image preview" />`;
+        img = preview.querySelector('img');
+    }
+    else if (type == 'audio') {
+        preview.innerHTML = `${button}<audio alt="Audio preview" controls></audio>`;
+        img = preview.querySelector('audio');
+    }
+    else if (type == 'video') {
+        preview.innerHTML = `${button}<video alt="Video preview" loop muted autoplay></video>`;
+        img = preview.querySelector('video');
+    }
+    img.onload = () => {
+        if (type == 'image') {
+            label.textContent = `${name} (${img.naturalWidth}x${img.naturalHeight}, ${describeAspectRatio(img.naturalWidth, img.naturalHeight)})`;
+            elem.dataset.width = img.naturalWidth;
+            elem.dataset.height = img.naturalHeight;
+            elem.dataset.resolution = `${img.naturalWidth}x${img.naturalHeight}`;
+        }
+        else if (type == 'audio') {
+            label.textContent = `${name} (${img.duration}s)`;
+            elem.dataset.duration = `${img.duration}`;
+        }
+        else if (type == 'video') {
+            label.textContent = `${name} (${img.duration}s) (${img.videoWidth}x${img.videoHeight}, ${describeAspectRatio(img.videoWidth, img.videoHeight)})`;
+            elem.dataset.duration = `${img.duration}`;
+            elem.dataset.width = img.videoWidth;
+            elem.dataset.height = img.videoHeight;
+            elem.dataset.resolution = `${img.videoWidth}x${img.videoHeight}`;
+        }
+        elem.dataset.filename = longName || name;
+        loadMediaFileDedup = true;
+        triggerChangeFor(elem);
+        loadMediaFileDedup = false;
+        if (callback) {
+            callback();
+        }
+    };
+    if (type == 'video') {
+        img.addEventListener('loadeddata', () => {
+            img.onload();
+        });
+        img.innerHTML = `<source src="${src}">`;
+    }
+    else if (type == 'audio') {
+        img.addEventListener('loadedmetadata', () => {
+            img.onload();
+        });
+        img.src = src;
+    }
+    else {
+        img.src = src;
+    }
+    preview.firstChild.addEventListener('click', () => {
+        clearMediaFileInput(elem);
+    });
+}
+
+function load_media_file(elem, type) {
+    if (loadMediaFileDedup) {
         return;
     }
     updateFileDragging({ target: elem }, true);
     let file = elem.files[0];
-    let parent = elem.closest('.auto-input');
-    let preview = parent.querySelector('.auto-input-image-preview');
-    let label = parent.querySelector('.auto-file-input-filename');
-    if (file) {
-        let name = file.name;
-        if (name.length > 30) {
-            name = `${name.substring(0, 27)}...`;
-        }
-        label.textContent = name;
-        let reader = new FileReader();
-        reader.addEventListener("load", () => {
-            elem.dataset.filedata = reader.result;
-            preview.innerHTML = `<button class="interrupt-button auto-input-image-remove-button" title="Remove image">&times;</button><img alt="Image preview" />`;
-            let img = preview.querySelector('img');
-            img.onload = () => {
-                label.textContent = `${name} (${img.naturalWidth}x${img.naturalHeight}, ${describeAspectRatio(img.naturalWidth, img.naturalHeight)})`;
-                elem.dataset.width = img.naturalWidth;
-                elem.dataset.height = img.naturalHeight;
-                elem.dataset.filename = file.name.length > 500 ? file.name.substring(0, 150) + '...' : file.name;
-                elem.dataset.resolution = `${img.naturalWidth}x${img.naturalHeight}`;
-                loadImageFileDedup = true;
-                triggerChangeFor(elem);
-                loadImageFileDedup = false;
-            };
-            img.src = reader.result;
-            preview.firstChild.addEventListener('click', () => {
-                delete elem.dataset.filedata;
-                label.textContent = "";
-                preview.innerHTML = '';
-                elem.value = '';
-                triggerChangeFor(elem);
-            });
-        }, false);
-        reader.readAsDataURL(file);
-    }
-    else {
-        delete elem.dataset.filedata;
-        label.textContent = "";
-        preview.innerHTML = '';
-    }
+    setMediaFileInput(elem, file, type);
 }
 
 function autoSelectWidth(elem) {
@@ -699,8 +764,8 @@ function makeSecretInput(featureid, id, paramid, name, description, value, place
     </div>`;
 }
 
-function dynamicSizeTextBox(elem, min=15) {
-    let maxHeight = parseInt(internalSiteJsGetUserSetting('maxpromptlines', '10'));
+function dynamicSizeTextBox(elem, min=15, altMax = null) {
+    let maxHeight = altMax || parseInt(internalSiteJsGetUserSetting('maxpromptlines', '10'));
     elem.style.height = '0px';
     let height = elem.scrollHeight;
     let fontSize = parseFloat(window.getComputedStyle(elem).fontSize);
@@ -717,7 +782,7 @@ function makeTextInput(featureid, id, paramid, name, description, value, format,
     }
     name = escapeHtml(name);
     featureid = featureid ? ` data-feature-require="${featureid}"` : '';
-    let onInp = format == "prompt" ? ' oninput="textPromptInputHandle(this)"' : (format == 'big' ? ' oninput="dynamicSizeTextBox(this, 32)"' : '');
+    let onInp = format == "prompt" ? ' oninput="textPromptInputHandle(this)"' : (format == 'big' ? ' oninput="dynamicSizeTextBox(this, 32, 50)"' : '');
     let tokenCounter = format == "prompt" ? '<span class="auto-input-prompt-tokencount" title="Text-Encoder token count / chunk-size">0/75</span>' : '';
     let [popover, featureid2] = getPopoverElemsFor(id, popover_button);
     featureid += featureid2;
@@ -761,10 +826,10 @@ function htmlWithParen(text) {
     let prefix = text.substring(0, start);
     let mid = text.substring(start, end + 1);
     let suffix = text.substring(end + 1);
-    return `${htmlWithParen(prefix)}<span class='parens'>${escapeHtml(mid)}</span>${htmlWithParen(suffix)}`;
+    return `${htmlWithParen(prefix)}<span class="parens">${escapeHtml(mid)}</span>${htmlWithParen(suffix)}`;
 }
 
-function makeDropdownInput(featureid, id, paramid, name, description, values, defaultVal, toggles = false, popover_button = true, alt_names = null) {
+function makeDropdownInput(featureid, id, paramid, name, description, values, defaultVal, toggles = false, popover_button = true, alt_names = null, reparse_alt_names = true) {
     name = escapeHtml(name);
     featureid = featureid ? ` data-feature-require="${featureid}"` : '';
     let [popover, featureid2] = getPopoverElemsFor(id, popover_button);
@@ -779,8 +844,9 @@ function makeDropdownInput(featureid, id, paramid, name, description, values, de
         let value = values[i];
         let alt_name = alt_names && alt_names[i] ? alt_names[i] : value;
         let selected = value == defaultVal ? ' selected="true"' : '';
-        let cleanName = htmlWithParen(alt_name);
-        html += `<option data-cleanname="${cleanName}" value="${escapeHtmlNoBr(value)}"${selected}>${cleanName}</option>\n`;
+        let simpleName = reparse_alt_names ? htmlWithParen(alt_name) : escapeHtmlNoBr(value);
+        let cleanName = reparse_alt_names ? htmlWithParen(alt_name) : alt_name;
+        html += `<option data-cleanname="${escapeHtmlNoBr(cleanName)}" value="${escapeHtmlNoBr(value)}"${selected}>${simpleName}</option>\n`;
     }
     html += `
         </select>
@@ -809,10 +875,10 @@ function makeMultiselectInput(featureid, id, paramid, name, description, values,
     return html;
 }
 
-function onImageInputPaste(e) {
+function onFileInputPaste(e, type) {
     let element = findParentOfClass(e.target, 'auto-input').querySelector('input[type="file"]');
     let files = e.clipboardData.files;
-    if (files.length > 0 && files[0].type.startsWith('image/')) {
+    if (files.length > 0 && files[0].type.startsWith(type)) {
         element.files = files;
         triggerChangeFor(element);
     }
@@ -825,18 +891,65 @@ function makeImageInput(featureid, id, paramid, name, description, toggles = fal
     featureid += featureid2;
     let html = `
     <div class="auto-input auto-file-box"${featureid}>
-        <label class="auto-image-input-label">
+        <label class="auto-file-input-label">
             <span class="auto-input-name">${getToggleHtml(toggles, id, name)}${translateableHtml(name)}${popover}</span>
-            <input type="text" id="${id}_pastebox" size="14" maxlength="0" placeholder="Ctrl+V: Paste Image" onpaste="onImageInputPaste(arguments[0])">
+            <input type="text" id="${id}_pastebox" size="14" maxlength="0" placeholder="Ctrl+V: Paste Image" onpaste="onFileInputPaste(arguments[0], 'image/')">
         </label>
         <label for="${id}" class="auto-file-label drag_image_target">
-            <input class="auto-file" type="file" accept="image/png, image/jpeg, image/webp, image/gif" id="${id}" data-param_id="${paramid}" onchange="load_image_file(this)" ondragover="updateFileDragging(arguments[0], false)" ondragleave="updateFileDragging(arguments[0], true)" autocomplete="off">
+            <input class="auto-file" type="file" accept="image/png, image/jpeg, image/webp, image/gif" id="${id}" data-param_id="${paramid}" onchange="load_media_file(this, 'image')" ondragover="updateFileDragging(arguments[0], false)" ondragleave="updateFileDragging(arguments[0], true)" autocomplete="off">
             <div class="auto-file-input">
                 <a class="auto-file-input-button basic-button">${translateableHtml("Choose File")}</a>
                 <span class="auto-file-input-filename"></span>
             </div>
         </label>
-        <div class="auto-input-image-preview"></div>
+        <div class="auto-input-preview"></div>
+    </div>`;
+    return html;
+}
+
+function makeAudioInput(featureid, id, paramid, name, description, toggles = false, popover_button = true) {
+    name = escapeHtml(name);
+    featureid = featureid ? ` data-feature-require="${featureid}"` : '';
+    let [popover, featureid2] = getPopoverElemsFor(id, popover_button);
+    featureid += featureid2;
+    let html = `
+    <div class="auto-input auto-file-box"${featureid}>
+        <label class="auto-file-input-label">
+            <span class="auto-input-name">${getToggleHtml(toggles, id, name)}${translateableHtml(name)}${popover}</span>
+            <input type="text" id="${id}_pastebox" size="14" maxlength="0" placeholder="Ctrl+V: Paste Audio" onpaste="onFileInputPaste(arguments[0], 'audio/')">
+        </label>
+        <label for="${id}" class="auto-file-label drag_audio_target">
+            <input class="auto-file" type="file" accept="audio/wav, audio/wave, audio/mp3, audio/aac, audio/ogg, audio/flac" id="${id}" data-param_id="${paramid}" onchange="load_media_file(this, 'audio')" ondragover="updateFileDragging(arguments[0], false)" ondragleave="updateFileDragging(arguments[0], true)" autocomplete="off">
+            <div class="auto-file-input">
+                <a class="auto-file-input-button basic-button">${translateableHtml("Choose File")}</a>
+                <span class="auto-file-input-filename"></span>
+            </div>
+        </label>
+        <div class="auto-input-preview"></div>
+    </div>`;
+    return html;
+}
+
+
+function makeVideoInput(featureid, id, paramid, name, description, toggles = false, popover_button = true) {
+    name = escapeHtml(name);
+    featureid = featureid ? ` data-feature-require="${featureid}"` : '';
+    let [popover, featureid2] = getPopoverElemsFor(id, popover_button);
+    featureid += featureid2;
+    let html = `
+    <div class="auto-input auto-file-box"${featureid}>
+        <label class="auto-file-input-label">
+            <span class="auto-input-name">${getToggleHtml(toggles, id, name)}${translateableHtml(name)}${popover}</span>
+            <input type="text" id="${id}_pastebox" size="14" maxlength="0" placeholder="Ctrl+V: Paste Video" onpaste="onFileInputPaste(arguments[0], 'video/')">
+        </label>
+        <label for="${id}" class="auto-file-label drag_video_target">
+            <input class="auto-file" type="file" accept="video/mp4, video/webm, video/quicktime, video/mov" id="${id}" data-param_id="${paramid}" onchange="load_media_file(this, 'video')" ondragover="updateFileDragging(arguments[0], false)" ondragleave="updateFileDragging(arguments[0], true)" autocomplete="off">
+            <div class="auto-file-input">
+                <a class="auto-file-input-button basic-button">${translateableHtml("Choose File")}</a>
+                <span class="auto-file-input-filename"></span>
+            </div>
+        </label>
+        <div class="auto-input-preview"></div>
     </div>`;
     return html;
 }
