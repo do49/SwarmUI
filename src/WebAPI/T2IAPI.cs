@@ -1,4 +1,4 @@
-﻿using FreneticUtilities.FreneticExtensions;
+using FreneticUtilities.FreneticExtensions;
 using FreneticUtilities.FreneticToolkit;
 using Newtonsoft.Json.Linq;
 using SixLabors.ImageSharp;
@@ -127,7 +127,10 @@ public static class T2IAPI
         tasks.TryAdd(handle, handle);
         while (Volatile.Read(ref retain) || tasks.Any())
         {
-            await Task.WhenAny(tasks.Keys.ToList());
+            if (tasks.Any())
+            {
+                await Task.WhenAny(tasks.Keys.ToList());
+            }
             foreach (Task t in tasks.Keys.Where(t => t.IsCompleted).ToList())
             {
                 tasks.TryRemove(t, out _);
@@ -175,7 +178,7 @@ public static class T2IAPI
                 discards = [.. discard.Values<int>()];
             }
         }
-        if (discards != null)
+        if (discards is not null)
         {
             foreach (int x in discards)
             {
@@ -272,8 +275,23 @@ public static class T2IAPI
             setError(ex.Message);
             return;
         }
+        if (user_input.Get(T2IParamTypes.ForwardRawBackendData, false))
+        {
+            user_input.ReceiveRawBackendData = (type, data) =>
+            {
+                output(new JObject()
+                {
+                    ["raw_backend_data"] = new JObject()
+                    {
+                        ["type"] = type,
+                        ["data"] = Convert.ToBase64String(data)
+                    }
+                });
+            };
+        }
         user_input.ApplySpecialLogic();
-        images = user_input.Get(T2IParamTypes.Images, images);
+        images = user_input.Get(T2IParamTypes.Images, 1);
+        claim.Extend(images - claim.WaitingGenerations);
         Logs.Info($"User {session.User.UserID} requested {images} image{(images == 1 ? "" : "s")} with model '{user_input.Get(T2IParamTypes.Model)?.Name}'...");
         if (Logs.MinimumLevel <= Logs.LogLevel.Verbose)
         {
@@ -342,6 +360,10 @@ public static class T2IAPI
                 imageSet.Add(image);
             }
             WebhookManager.SendEveryGenWebhook(thisParams, url, image.File);
+            if (thisParams.Get(T2IParamTypes.ForwardSwarmData, false))
+            {
+                output(new JObject() { ["raw_swarm_data"] = new JObject() { ["params_used"] = JArray.FromObject(thisParams.ParamsQueried.ToArray()) } });
+            }
             output(new JObject() { ["image"] = url, ["batch_index"] = $"{actualIndex}", ["request_id"] = $"{thisParams.UserRequestId}", ["metadata"] = string.IsNullOrWhiteSpace(metadata) ? null : metadata });
         }
         for (int i = 0; i < images && !claim.ShouldCancel; i++)
@@ -371,7 +393,7 @@ public static class T2IAPI
                 }
             }
             int numCalls = 0;
-            tasks.Add(Task.Run(() => T2IEngine.CreateImageTask(thisParams, $"{imageIndex}", claim, output, setError, isWS, Program.ServerSettings.Backends.PerRequestTimeoutMinutes,
+            tasks.Add(Task.Run(() => T2IEngine.CreateImageTask(thisParams, $"{imageIndex}", claim, output, setError, isWS,
                 (image, metadata) =>
                 {
                     int actualIndex = imageIndex + numCalls;
@@ -429,10 +451,12 @@ public static class T2IAPI
             });
             Image gridImg = new(grid);
             long genTime = Environment.TickCount64 - timeStart;
-            user_input.ExtraMeta["generation_time"] = $"{genTime / 1000.0:0.00} total seconds (average {(finalTime - timeStart) / griddables.Length / 1000.0:0.00} seconds per image)";
-            (Task<MediaFile> gridFileTask, string metadata) = user_input.SourceSession.ApplyMetadata(gridImg, user_input, imgs.Length);
+            T2IParamInput finalInput = user_input.Clone();
+            finalInput.NoUnusedParams = true;
+            finalInput.ExtraMeta["generation_time"] = $"{genTime / 1000.0:0.00} total seconds (average {(finalTime - timeStart) / griddables.Length / 1000.0:0.00} seconds per image)";
+            (Task<MediaFile> gridFileTask, string metadata) = finalInput.SourceSession.ApplyMetadata(gridImg, finalInput, imgs.Length);
             T2IEngine.ImageOutput gridOutput = new() { File = gridImg, ActualFileTask = gridFileTask, GenTimeMS = genTime };
-            saveImage(gridOutput, -1, user_input, metadata);
+            saveImage(gridOutput, -1, finalInput, metadata);
         }
         T2IEngine.PostBatchEvent?.Invoke(new(user_input, [.. griddables]));
         output(new JObject() { ["discard_indices"] = JToken.FromObject(discard) });
@@ -470,6 +494,7 @@ public static class T2IAPI
         [API.APIParameter("Data URL of the image to save.")] string image,
         [API.APIParameter("Raw mapping of input should contain general T2I parameters (see listing on Generate tab of main interface) to values, eg `{ \"prompt\": \"a photo of a cat\", \"model\": \"OfficialStableDiffusion/sd_xl_base_1.0\", \"steps\": 20, ... }`. Note that this is the root raw map, ie all params go on the same level as `images`, `session_id`, etc.")] JObject rawInput)
     {
+        // TODO: Recognize audio/video inputs properly
         ImageFile img = ImageFile.FromDataString(image);
         T2IParamInput user_input;
         rawInput.Remove("image");

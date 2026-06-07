@@ -1,4 +1,4 @@
-﻿using FreneticUtilities.FreneticExtensions;
+using FreneticUtilities.FreneticExtensions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Html;
@@ -134,7 +134,7 @@ public class WebServer
         // I don't know who's to blame, probably half Microsoft half AWS, but if this is enabled (which it is by default on all profiles, even production?!),
         // it creates a persistent filewatcher which locks up hard. So, forcibly disable it. Which it should be disabled anyway. Obviously.
         Environment.SetEnvironmentVariable("ASPNETCORE_hostBuilder:reloadConfigOnChange", "false");
-        var builder = WebApplication.CreateBuilder(new WebApplicationOptions() { WebRootPath = "src/wwwroot" });
+        WebApplicationBuilder builder = WebApplication.CreateBuilder(new WebApplicationOptions() { WebRootPath = "src/wwwroot" });
         builder.WebHost.ConfigureKestrel(options =>
         {
             options.Limits.MaxRequestHeadersTotalSize = 1024 * 1024;
@@ -227,22 +227,32 @@ public class WebServer
         timer.Check("[Web] StartStop handler");
         WebApp.UseStaticFiles(new StaticFileOptions());
         timer.Check("[Web] static files");
+        static string fixRoute(HttpRequest request)
+        {
+            if (request.QueryString.HasValue)
+            {
+                return $"/ComfyBackendDirect{request.Path}{request.QueryString}";
+            }
+            return $"/ComfyBackendDirect{request.Path}";
+        }
         WebApp.Use(async (context, next) =>
         {
             string referrer = (context.Request.Headers.Referer.FirstOrDefault() ?? "").After("://").After('/').ToLowerFast();
             string path = context.Request.Path.Value.ToLowerFast();
             if (referrer.StartsWith("comfybackenddirect/") && !path.StartsWith("/comfybackenddirect/"))
             {
-                Logs.Debug($"ComfyBackendDirect call via Referrer '{referrer}' was misrouted, rerouting to 'ComfyBackendDirect{context.Request.Path}'");
+                string fixedRoute = fixRoute(context.Request);
+                Logs.Debug($"ComfyBackendDirect call via Referrer '{referrer}' was misrouted, rerouting to '{fixedRoute}'");
                 context.Response.StatusCode = StatusCodes.Status307TemporaryRedirect;
-                context.Response.Headers.Location = $"/ComfyBackendDirect{context.Request.Path}";
+                context.Response.Headers.Location = fixedRoute;
                 return;
             }
             else if (path.StartsWith("/assets/"))
             {
-                Logs.Debug($"ComfyBackendDirect assets call was misrouted and improperly referrered, rerouting to '{context.Request.Path}'");
+                string fixedRoute = fixRoute(context.Request);
+                Logs.Debug($"ComfyBackendDirect assets call was misrouted and improperly referrered, rerouting to '{fixedRoute}'");
                 context.Response.StatusCode = StatusCodes.Status307TemporaryRedirect;
-                context.Response.Headers.Location = $"/ComfyBackendDirect{context.Request.Path}";
+                context.Response.Headers.Location = fixedRoute;
                 return;
             }
             if (Program.ServerSettings.Network.EnableSpecialDevForwarding)
@@ -267,7 +277,7 @@ public class WebServer
         });
         WebApp.UseRouting();
         WebApp.UseWebSockets(new WebSocketOptions() { KeepAliveInterval = TimeSpan.FromSeconds(30) });
-        WebApp.MapRazorPages();
+        WebApp.MapRazorPages().DisableAntiforgery();
         timer.Check("[Web] core use calls");
         WebApp.MapGet("/", () => Results.Redirect("Text2Image"));
         WebApp.Map("/API/{*Call}", API.HandleAsyncRequest);
@@ -317,13 +327,13 @@ public class WebServer
             foreach (string script in e.ScriptFiles)
             {
                 string fname = $"ExtensionFile/{e.ExtensionName}/{script}";
-                ExtensionSharedFiles.Add(fname, new (() => File.ReadAllText($"{e.FilePath}{script}")));
+                ExtensionSharedFiles.Add(fname, new(() => File.ReadAllText($"{e.FilePath}{script}")));
                 scripts.Append($"<script src=\"{fname}?vary={Utilities.VaryID}\"></script>\n");
             }
             foreach (string css in e.StyleSheetFiles)
             {
                 string fname = $"ExtensionFile/{e.ExtensionName}/{css}";
-                ExtensionSharedFiles.Add(fname, new (() => File.ReadAllText($"{e.FilePath}{css}")));
+                ExtensionSharedFiles.Add(fname, new(() => File.ReadAllText($"{e.FilePath}{css}")));
                 stylesheets.Append($"<link rel=\"stylesheet\" href=\"{fname}?vary={Utilities.VaryID}\" />");
             }
             foreach (string file in e.OtherAssets)
@@ -332,9 +342,9 @@ public class WebServer
                 string toRead = $"{e.FilePath}{file}";
                 ExtensionAssets.Add(fname, new(() => File.ReadAllBytes(toRead)));
             }
-            if (Directory.Exists($"{e.FilePath}/Tabs/Text2Image/"))
+            if (Directory.Exists($"{e.FilePath}Tabs/Text2Image/"))
             {
-                foreach (string file in Directory.EnumerateFiles($"{e.FilePath}/Tabs/Text2Image/", "*.html"))
+                foreach (string file in Directory.EnumerateFiles($"{e.FilePath}Tabs/Text2Image/", "*.html"))
                 {
                     string simpleName = file.AfterLast('/').BeforeLast('.');
                     string id = T2IParamTypes.CleanTypeName(simpleName);
@@ -501,6 +511,12 @@ public class WebServer
         return id is null ? null : Program.Sessions.GetUser(id);
     }
 
+    /// <summary>Returns the root folder for the user's output.</summary>
+    public static string GetUserOutputRoot(string user) => $"{Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, Program.ServerSettings.Paths.OutputPath)}/{user}".TrimEnd('/');
+
+    /// <summary>Returns the root folder for the user's output.</summary>
+    public static string GetUserOutputRoot(User user) => GetUserOutputRoot(user.UserID);
+
     /// <summary>Web route for viewing output images.</summary>
     public async Task ViewOutput(HttpContext context)
     {
@@ -527,7 +543,7 @@ public class WebServer
             await context.YieldJsonOutput(null, 400, Utilities.ErrorObj("invalid or unauthorized", "invalid_user"));
             return;
         }
-        string root = Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, Program.ServerSettings.Paths.OutputPath);
+        string root = GetUserOutputRoot("");
         if (Program.ServerSettings.Paths.AppendUserNameToOutputPath)
         {
             if (isExact)
@@ -538,12 +554,12 @@ public class WebServer
                     await context.YieldJsonOutput(null, 400, Utilities.ErrorObj("unauthorized - you may not view other users' outputs", "unauthorized"));
                     return;
                 }
-                root = $"{root}/{forUser}";
+                root = GetUserOutputRoot(forUser);
                 path = newPath;
             }
             else
             {
-                root = $"{root}/{user.UserID}";
+                root = GetUserOutputRoot(user);
             }
         }
         (path, string consoleError, string userError) = CheckFilePath(root, path);
@@ -597,9 +613,6 @@ public class WebServer
             }
             return;
         }
-        context.Response.ContentType = contentType;
-        context.Response.StatusCode = 200;
-        context.Response.ContentLength = data.Length;
         if (contentType.StartsWith("application/") || contentType.StartsWith("text/"))
         {
             context.Response.Headers.CacheControl = "private, max-age=2";
@@ -608,8 +621,7 @@ public class WebServer
         {
             context.Response.Headers.CacheControl = $"private, max-age={Program.ServerSettings.Network.OutputCacheSeconds}";
         }
-        await context.Response.Body.WriteAsync(data, Program.GlobalProgramCancel);
-        await context.Response.CompleteAsync();
+        await Results.Bytes(data, contentType, enableRangeProcessing: true).ExecuteAsync(context);
     }
 
     /// <summary>Web route for viewing special images (eg model icons).</summary>

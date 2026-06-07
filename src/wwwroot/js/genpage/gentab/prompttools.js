@@ -109,6 +109,10 @@ class PromptTabCompleteClass {
             if (matches) {
                 for (let match of matches) {
                     let varName = match.substring('<setvar['.length, match.length - ']:'.length);
+                    let commaIndex = varName.indexOf(',');
+                    if (commaIndex != -1) {
+                        varName = varName.substring(0, commaIndex);
+                    }
                     if (varName.toLowerCase().includes(prefixLow)) {
                         possible.push(varName);
                     }
@@ -149,6 +153,9 @@ class PromptTabCompleteClass {
             return [];
         }, true);
         this.registerPrefix('refiner', 'Add a section of prompt text that is only used for the Refine/Upscale pass.', (prefix) => {
+            return [];
+        }, true);
+        this.registerPrefix('pixeldecoder', 'Add a section of prompt text that is only used for the PiD pixel-decoder upscale pass.', (prefix) => {
             return [];
         }, true);
         this.registerPrefix('video', 'Add a section of prompt text that replaces the prompt for the image-to-video generation pass.', (prefix) => {
@@ -371,7 +378,7 @@ class PromptTabCompleteClass {
                     if (val.clean) {
                         clean_name = escapeHtml(val.clean);
                     }
-                    if (val.tag) {
+                    if ('tag' in val) {
                         className = `tag-text tag-type-${val.tag}`;
                         index = wordIndex;
                     }
@@ -458,12 +465,15 @@ class PromptPlusButton {
         doToggleEnable('text_prompt_segment_scheduler');
         this.segmentModalModelSelect.addEventListener('change', () => this.segmentModalProcessChanges());
         this.segmentModalTextMatch = getRequiredElementById('text_prompt_segment_textmatch');
+        this.segmentModalTextMatch.addEventListener('input', () => this.segmentModalProcessChanges());
         this.segmentModalClassIds = getRequiredElementById('text_prompt_segment_classids');
         this.segmentModalYoloId = getRequiredElementById('text_prompt_segment_yoloid');
         this.segmentModalCreativity = getRequiredElementById('text_prompt_segment_creativity');
         this.segmentModalThreshold = getRequiredElementById('text_prompt_segment_threshold');
         this.segmentModalInvertMask = getRequiredElementById('text_prompt_segment_invert_mask');
         this.segmentModalMainText = getRequiredElementById('text_prompt_segment_gentext');
+        this.segmentModalAddButton = getRequiredElementById('text_prompt_segment_add_button');
+        this.segmentModalErrorBox = getRequiredElementById('text_prompt_segment_error');
         textPromptAddKeydownHandler(this.segmentModalMainText);
         enableSlidersIn(this.segmentModalOther);
         this.populateDropdownFromSource('input_sampler', this.segmentModalSampler, 'text_prompt_segment_sampler_toggle');
@@ -526,6 +536,7 @@ class PromptPlusButton {
             this.segmentModalClear();
             this.segmentModalProcessChanges();
             $('#text_prompt_segment_modal').modal('show');
+            this.segmentModalProcessChanges();
         }});
         buttons.push({ key: 'region', key_html: 'Regional Prompt', title: "Supply a different prompt for a sub-region of an image", action: () => {
             this.autoHideMenu();
@@ -589,7 +600,8 @@ class PromptPlusButton {
     }
 
     segmentModalProcessChanges() {
-        if (this.segmentModalModelSelect.value == 'CLIP-Seg') {
+        let isCliPSeg = this.segmentModalModelSelect.value == 'CLIP-Seg';
+        if (isCliPSeg) {
             findParentOfClass(this.segmentModalTextMatch, 'auto-input').style.display = '';
             findParentOfClass(this.segmentModalYoloId, 'auto-input').style.display = 'none';
             findParentOfClass(this.segmentModalClassIds, 'auto-input').style.display = 'none';
@@ -601,6 +613,14 @@ class PromptPlusButton {
             findParentOfClass(this.segmentModalTextMatch, 'auto-input').style.display = 'none';
             findParentOfClass(this.segmentModalYoloId, 'auto-input').style.display = '';
             findParentOfClass(this.segmentModalClassIds, 'auto-input').style.display = '';
+        }
+        if (isCliPSeg && !this.segmentModalTextMatch.value.trim()) {
+            this.segmentModalAddButton.disabled = true;
+            this.segmentModalErrorBox.innerText = translate("Text Match is required when using CLIP-Seg");
+        }
+        else {
+            this.segmentModalAddButton.disabled = false;
+            this.segmentModalErrorBox.innerText = '';
         }
     }
 

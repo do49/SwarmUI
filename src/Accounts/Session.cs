@@ -1,4 +1,4 @@
-﻿using FreneticUtilities.FreneticExtensions;
+using FreneticUtilities.FreneticExtensions;
 using FreneticUtilities.FreneticToolkit;
 using LiteDB;
 using SwarmUI.Core;
@@ -41,6 +41,9 @@ public class Session : IEquatable<Session>
 
     /// <summary>If authorization is enabled, this is the token ID that created this session.</summary>
     public string OriginToken;
+
+    /// <summary>If true, this session persists across restarts. If false, it sits only in memory.</summary>
+    public bool Persist = true;
 
     /// <summary>The current database entry for this <see cref="Session"/>.</summary>
     public DatabaseEntry MakeDBEntry()

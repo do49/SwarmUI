@@ -93,7 +93,7 @@ let aspectRatios = [
 ];
 
 
-function getHtmlForParam(param, prefix) {
+function getHtmlForParam(param, prefix, isPreset = false) {
     try {
         let example = param.examples ? `<br><span class="translate">Examples</span>: <code>${param.examples.map(escapeHtmlNoBr).join(`</code>,&emsp;<code>`)}</code>` : '';
         let pop = param.no_popover ? '' : `<div class="sui-popover sui-info-popover" id="popover_${prefix}${param.id}"><b class="translate">${escapeHtmlNoBr(param.name)}</b> (${param.type}):<br><span class="translate slight-left-margin-block">${safeHtmlOnly(param.description)}</span>${example}</div>`;
@@ -162,13 +162,13 @@ function getHtmlForParam(param, prefix) {
                 return {html: makeDropdownInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, modelList, param.default, param.toggleable, !param.no_popover, modelAltNames, false) + pop,
                     runnable: () => autoSelectWidth(getRequiredElementById(`${prefix}${param.id}`))};
             case 'image':
-                return {html: makeImageInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.toggleable, !param.no_popover) + pop};
+                return {html: makeImageInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.toggleable, !param.no_popover, !isPreset) + pop};
             case 'audio':
-                return {html: makeAudioInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.toggleable, !param.no_popover) + pop};
+                return {html: makeAudioInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.toggleable, !param.no_popover, !isPreset) + pop};
             case 'video':
-                return {html: makeVideoInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.toggleable, !param.no_popover) + pop};
+                return {html: makeVideoInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.toggleable, !param.no_popover, !isPreset) + pop};
             case 'image_list':
-                return {html: makeImageInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.toggleable, !param.no_popover) + pop};
+                return {html: makeImageInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.toggleable, !param.no_popover, !isPreset) + pop};
         }
         console.log(`Cannot generate input for param ${param.id} of type ${param.type} - unknown type`);
         return null;
@@ -379,7 +379,7 @@ function genInputs(delay_final = false) {
                 if (isPrompt(param) ? isMain : true) {
                     let presetParam = JSON.parse(JSON.stringify(param));
                     presetParam.toggleable = true;
-                    let presetData = getHtmlForParam(presetParam, "preset_input_");
+                    let presetData = getHtmlForParam(presetParam, "preset_input_", true);
                     presetHtml += presetData.html;
                     if (presetData.runnable) {
                         runnables.push(presetData.runnable);
@@ -515,8 +515,8 @@ function genInputs(delay_final = false) {
             inputAspectRatio.addEventListener('change', () => {
                 if (inputAspectRatio.value != "Custom") {
                     let aspectRatio = inputAspectRatio.value;
-                    let targetWidth = curModelWidth;
-                    let targetHeight = curModelHeight;
+                    let targetWidth = currentModelHelper.curWidth;
+                    let targetHeight = currentModelHelper.curHeight;
                     let doAltLogic = true;
                     if (inputSideLength.value && inputSideLengthToggle.checked) {
                         targetWidth = inputSideLength.value;
@@ -618,19 +618,10 @@ function genInputs(delay_final = false) {
             inputBatchSize.value = 1;
             triggerChangeFor(inputBatchSize);
         }
-        let inputInterpolator1 = document.getElementById('input_textvideoframeinterpolationmethod');
+        let inputInterpolator1 = document.getElementById('input_videoframeinterpolationmethod');
         if (inputInterpolator1) {
             inputInterpolator1.addEventListener('change', () => {
-                console.log(inputInterpolator1.value, currentBackendFeatureSet);
                 if (inputInterpolator1.value == 'GIMM-VFI' && !currentBackendFeatureSet.includes('frameinterps_gimmvfi')) {
-                    installFeatureById('gimm_vfi', null);
-                }
-            });
-        }
-        let inputInterpolator2 = document.getElementById('input_videoframeinterpolationmethod');
-        if (inputInterpolator2) {
-            inputInterpolator2.addEventListener('change', () => {
-                if (inputInterpolator2.value == 'GIMM-VFI' && !currentBackendFeatureSet.includes('frameinterps_gimmvfi')) {
                     installFeatureById('gimm_vfi', null);
                 }
             });
@@ -679,8 +670,8 @@ function genInputs(delay_final = false) {
                                 let ratio = imageWidth / imageHeight;
                                 let width = Math.round(Math.sqrt(512 * 512 * ratio));
                                 let height = Math.round(512 * 512 / width);
-                                inputWidth.value = roundTo(width * (curModelWidth == 0 ? 512 : curModelWidth) / 512, 32);
-                                inputHeight.value = roundTo(height * (curModelHeight == 0 ? 512 : curModelHeight) / 512, 32);
+                                inputWidth.value = roundTo(width * (currentModelHelper.curWidth == 0 ? 512 : currentModelHelper.curWidth) / 512, 32);
+                                inputHeight.value = roundTo(height * (currentModelHelper.curHeight == 0 ? 512 : currentModelHelper.curHeight) / 512, 32);
                                 triggerChangeFor(inputWidth);
                                 triggerChangeFor(inputHeight);
                             }
@@ -804,7 +795,7 @@ function genInputs(delay_final = false) {
         }
         let modelCookie = getCookie('selected_model');
         if (modelCookie) {
-            directSetModel(modelCookie);
+            currentModelHelper.directSetModel(modelCookie);
         }
         let modelInput = getRequiredElementById('input_model');
         modelInput.addEventListener('change', () => {
@@ -822,7 +813,14 @@ function genInputs(delay_final = false) {
         }
         let controlnetGroup = document.getElementById('input_group_content_controlnet');
         if (controlnetGroup) {
-            controlnetGroup.append(createDiv(`controlnet_button_preview`, null, `<button class="basic-button" onclick="controlnetShowPreview()">Preview</button>`));
+            let firstGroup = controlnetGroup.querySelector('.input-group');
+            let buttonDiv = createDiv(`controlnet_button_preview`, 'wide_block', `<button class="basic-button" onclick="controlnetShowPreview()">Preview</button> <button id="controlnet_button_save_preview" class="basic-button" onclick="controlnetSavePreviewToServer()" style="display:none;">Save to Server</button>`);
+            if (firstGroup) {
+                controlnetGroup.insertBefore(buttonDiv, firstGroup);
+            }
+            else {
+                controlnetGroup.append(buttonDiv);
+            }
             if (!currentBackendFeatureSet.includes('controlnetpreprocessors')) {
                 controlnetGroup.append(createDiv(`controlnet_install_preprocessors`, 'keep_group_visible', `<button class="basic-button" onclick="installFeatureById('controlnet_preprocessors', 'controlnet_install_preprocessors')">Install Controlnet Preprocessors</button>`));
             }
@@ -831,9 +829,9 @@ function genInputs(delay_final = false) {
         if (revisionGroup && !currentBackendFeatureSet.includes('ipadapter')) {
             revisionGroup.append(createDiv(`revision_install_ipadapter`, null, `<button class="basic-button" onclick="installFeatureById('ipadapter', 'revision_install_ipadapter')">Install IP Adapter</button>`));
         }
-        let videoGroup = document.getElementById('input_group_content_imagetovideo');
-        if (videoGroup && !currentBackendFeatureSet.includes('frameinterps')) {
-            videoGroup.append(createDiv(`video_install_frameinterps`, 'keep_group_visible', `<button class="basic-button" onclick="installFeatureById('frame_interpolation', 'video_install_frameinterps')">Install Frame Interpolation</button>`));
+        let advancedVideoGroup = document.getElementById('input_group_content_advancedvideo');
+        if (advancedVideoGroup && !currentBackendFeatureSet.includes('frameinterps')) {
+            advancedVideoGroup.append(createDiv(`video_install_frameinterps`, 'keep_group_visible', `<button class="basic-button" onclick="installFeatureById('frame_interpolation', 'video_install_frameinterps')">Install Frame Interpolation</button>`));
         }
         for (let runnable of postParamBuildSteps) {
             runnable();
@@ -845,6 +843,9 @@ function genInputs(delay_final = false) {
         }
         if (imageEditor.active) {
             imageEditor.doParamHides();
+        }
+        if (currentPresets.length > 0) {
+            updatePresetList();
         }
     };
     if (delay_final) {
@@ -886,7 +887,7 @@ function getGenInput(input_overrides = {}, input_preoverrides = {}) {
         }
         let group = type.original_group || type.group;
         while (group) {
-            if (group.toggles && !getRequiredElementById(`input_group_content_${group.id}_toggle`).checked) {
+            if (group.toggles && !document.getElementById(`input_group_content_${group.id}_toggle`)?.checked) {
                 continue paramLoop;
             }
             group = group.parent;
@@ -903,6 +904,18 @@ function getGenInput(input_overrides = {}, input_preoverrides = {}) {
         if (type.type == 'image') {
             extraMetadata[`${type.id}_filename`] = elem.dataset.filename;
             extraMetadata[`${type.id}_resolution`] = elem.dataset.resolution;
+            if (elem.dataset.duration) {
+                extraMetadata[`${type.id}_duration`] = elem.dataset.duration;
+            }
+        }
+        else if (type.type == 'video') {
+            extraMetadata[`${type.id}_filename`] = elem.dataset.filename;
+            extraMetadata[`${type.id}_resolution`] = elem.dataset.resolution;
+            extraMetadata[`${type.id}_duration`] = elem.dataset.duration;
+        }
+        else if (type.type == 'audio') {
+            extraMetadata[`${type.id}_filename`] = elem.dataset.filename;
+            extraMetadata[`${type.id}_duration`] = elem.dataset.duration;
         }
         if (type.id == 'prompt') {
             let container = findParentOfClass(elem, 'auto-input');
@@ -1065,8 +1078,20 @@ function setDirectParamValue(param, value, paramElem = null, forceDropdowns = fa
         $(paramElem).val(vals);
         $(paramElem).trigger('change');
     }
+    else if (param.type == "image_list") {
+        // List too messy for impl for now
+        return;
+    }
     else if (param.type == "image" || param.type == "image_list" || param.type == "audio" || param.type == "video") {
-        // do not edit raw data files directly, this will just misbehave
+        if (typeof value == 'string' && value.startsWith('inputs/')) {
+            let previewSrc = `${getImageOutPrefix()}/${value}`;
+            setMediaFileDirect(paramElem, previewSrc, param.type, value, value, () => {
+                paramElem.dataset.filedata = value;
+            });
+            return;
+        }
+        // do not edit raw data files directly (eg data URLs), this will just misbehave
+        return;
     }
     else if (paramElem.tagName == "SELECT") {
         if (![...paramElem.querySelectorAll('option')].map(o => o.value).includes(value)) {
@@ -1094,6 +1119,23 @@ function setDirectParamValue(param, value, paramElem = null, forceDropdowns = fa
     if (doTrigger) {
         triggerChangeFor(paramElem);
     }
+}
+
+/** Clear all temporary parameter/group/etc. state data. */
+function clearParamStorage() {
+    for (let cookie of listCookies('lastparam_input_')) {
+        deleteCookie(cookie);
+    }
+    for (let cookie of listCookies('group_toggle_')) {
+        deleteCookie(cookie);
+    }
+    for (let cookie of listCookies('group_open_')) {
+        deleteCookie(cookie);
+    }
+    deleteCookie('selected_model');
+    localStorage.removeItem('display_advanced');
+    localStorage.removeItem('last_comfy_workflow_input');
+    localStorage.removeItem('current_presets');
 }
 
 function resetParamsToDefault(exclude = [], doDefaultPreset = true) {
@@ -1158,7 +1200,7 @@ function resetParamsToDefault(exclude = [], doDefaultPreset = true) {
         triggerChangeFor(aspect);
     }
     clearPromptImages();
-    currentModelChanged();
+    currentModelHelper.currentModelChanged();
     clearPresets();
     let defaultPreset = getPresetByTitle('default');
     if (defaultPreset && doDefaultPreset) {
@@ -1186,7 +1228,7 @@ function hideUnalteredParameters() {
 let hideParamCallbacks = [];
 
 function hideUnsupportableParams() {
-    if (!gen_param_types) {
+    if (typeof gen_param_types == 'undefined' || !gen_param_types) {
         return;
     }
     let ipadapterInstallButton = document.getElementById('revision_install_ipadapter');
@@ -1227,7 +1269,7 @@ function hideUnsupportableParams() {
             let paramToggler = document.getElementById(`input_${param.id}_toggle`);
             let isAltered = paramToggler ? paramToggler.checked : `${getInputVal(elem)}` != `${param.default}`;
             let group = param.original_group || param.group;
-            if (group && group.toggles && !getRequiredElementById(`input_group_content_${group.id}_toggle`).checked) {
+            if (group && group.toggles && !document.getElementById(`input_group_content_${group.id}_toggle`)?.checked) {
                 isAltered = false;
             }
             if (box && box.style.display == 'none' && box.dataset.visible_controlled) {
@@ -1416,17 +1458,18 @@ function controlnetShowPreview() {
         toggler.checked = true;
         doToggleGroup('input_group_content_controlnet');
     }
-    setCurrentModel(() => {
+    currentModelHelper.ensureCurrentModel(() => {
         if (getRequiredElementById('current_model').value == '') {
             showError("Cannot generate, no model selected.");
             return;
         }
         let previewArea = getRequiredElementById('controlnet_button_preview');
         let clearPreview = () => {
-            let lastResult = previewArea.querySelector('.controlnet-preview-result');
-            if (lastResult) {
-                lastResult.remove();
+            for (let result of previewArea.querySelectorAll('.controlnet-preview-result, .controlnet-save-result')) {
+                result.remove();
             }
+            delete previewArea.dataset.controlnetPreviewImage;
+            getRequiredElementById('controlnet_button_save_preview').style.display = 'none';
         };
         clearPreview();
         let imgInput = getRequiredElementById('input_controlnetimageinput');
@@ -1448,13 +1491,51 @@ function controlnetShowPreview() {
             if (!data.image) {
                 return;
             }
-            let imgElem = document.createElement('img');
-            imgElem.src = data.image;
             let resultBox = createDiv(null, 'controlnet-preview-result');
-            resultBox.append(imgElem);
+            let isVideo = isVideoExt(data.image);
+            if (isVideo) {
+                let vidElem = document.createElement('video');
+                vidElem.loop = true;
+                vidElem.autoplay = true;
+                vidElem.muted = true;
+                vidElem.controls = true;
+                let sourceObj = document.createElement('source');
+                sourceObj.src = data.image;
+                sourceObj.type = isVideo;
+                vidElem.append(sourceObj);
+                resultBox.append(vidElem);
+            }
+            else {
+                let imgElem = document.createElement('img');
+                imgElem.src = data.image;
+                resultBox.append(imgElem);
+            }
             clearPreview();
+            previewArea.dataset.controlnetPreviewImage = data.image;
             previewArea.append(resultBox);
+            getRequiredElementById('controlnet_button_save_preview').style.display = '';
         });
+    });
+}
+
+/** Saves the current ControlNet preview to the server. */
+function controlnetSavePreviewToServer() {
+    let name = `controlnet-preview-${formatDateTime(new Date()).replaceAll(':', '-').replaceAll(' ', '_')}`;
+    let data = {
+        image: getRequiredElementById('controlnet_button_preview').dataset.controlnetPreviewImage,
+        ['Override Outpath Format']: `inputs/controlnet/${name}`
+    };
+    genericRequest('AddImageToHistory', data, res => {
+        let previewArea = getRequiredElementById('controlnet_button_preview');
+        let oldSaveResult = previewArea.querySelector('.controlnet-save-result');
+        if (oldSaveResult) {
+            oldSaveResult.remove();
+        }
+        let saveResult = createDiv(null, 'controlnet-save-result modal_success_bottom', 'Saved ControlNet preview.');
+        previewArea.append(saveResult);
+        setTimeout(() => {
+            saveResult.remove();
+        }, 5000);
     });
 }
 

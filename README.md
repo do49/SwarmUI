@@ -1,10 +1,10 @@
 # SwarmUI
 
-**SwarmUI v0.9.7 Beta**.
+**SwarmUI v0.9.8 Beta**.
 
 *Formerly known as StableSwarmUI.*
 
-A Modular AI Image Generation Web-User-Interface, with an emphasis on making powertools easily accessible, high performance, and extensibility. Supports AI image models (*Stable Diffusion, Flux, Qwen Image, etc.*), and AI video models (*Wan, Hunyuan Video, etc.*), with plans to support eg audio and more in the future.
+A Modular AI Image Generation Web-User-Interface, with an emphasis on making powertools easily accessible, high performance, and extensibility. Supports AI image models (*Stable Diffusion, Z-Image, Flux, Qwen Image, etc.*), and AI video models (*Wan, Hunyuan Video, etc.*), with plans to support eg audio and more in the future.
 
 ![ui-screenshot](.github/images/swarmui.jpg)
 
@@ -57,7 +57,7 @@ Note it may take several minutes to start up the first time. Check the container
 
 Note: if you're on Windows 10, you may need to manually install [git](https://git-scm.com/download/win) and [DotNET 8 SDK](https://dotnet.microsoft.com/en-us/download/dotnet/8.0) first. (Windows 11 this is automated).
 
-- Download [The Install-Windows.bat file](https://github.com/mcmonkeyprojects/SwarmUI/releases/download/0.9.5-Beta/install-windows.bat), store it somewhere you want to install at (not `Program Files`), and run it.
+- Download [The Install-Windows.bat file](https://github.com/mcmonkeyprojects/SwarmUI/releases/download/0.9.8-Beta/install-windows.bat), store it somewhere you want to install at (not `Program Files`), and run it.
     - It should open a command prompt and install itself.
     - If it closes without going further, try running it again, it sometimes needs to run twice. (TODO: Fix that)
     - It will place an icon on your desktop that you can use to re-launch the server at any time.
@@ -81,7 +81,7 @@ Note: if you're on Windows 10, you may need to manually install [git](https://gi
 - Install `git` and `python3` via your OS package manager if they are not already installed (make sure to include `pip` and `venv` on distros that do not include them in python directly)
     - For example, on some Ubuntu (desktop) versions, `sudo apt install git python3-pip python3-venv`, or you may need <https://launchpad.net/~deadsnakes/+archive/ubuntu/ppa>
     - For Debian or Ubuntu Server, `sudo apt install git python3-full`
-    - You'll want Python 3.11. Things should also work fine with 3.10 or 3.12. Do not use 3.13.
+    - You'll want Python 3.11 or 3.12. Things should also work fine with 3.10. Do not use 3.13.
     - Make sure `python3.11 -m pip --version` returns a valid package
 
 ### Linux Easy Install
@@ -121,7 +121,7 @@ Note: if you're on Windows 10, you may need to manually install [git](https://gi
 - Verify your `brew` installation with `brew doctor`. You should not see any error in the command output.
 - Install .NET for macOS: `brew install dotnet`.
 - If you don't have Python, install it: `brew install python@3.11` and `brew install virtualenv`
-    - Python 3.11, 3.10, 3.12 are all fine. 3.13 is not, do not use 3.13.
+    - Python 3.11, 3.12, 3.10 are all fine. 3.13 is not, do not use 3.13.
 - Change the directory (`cd`) to the folder where you want to install SwarmUI.
 - Clone the SwarmUI GitHub repository: `git clone https://github.com/mcmonkeyprojects/SwarmUI`.
 - `cd SwarmUI` and run the installation script: `./launch-macos.sh`.
@@ -173,7 +173,7 @@ Copyright (c) 2024 Stability AI
 
 The MIT License (MIT)
 
-Copyright (c) 2024-2025 Alex "mcmonkey" Goodwin
+Copyright (c) 2024-2026 Alex "mcmonkey" Goodwin
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

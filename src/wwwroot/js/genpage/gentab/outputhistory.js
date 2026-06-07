@@ -1,4 +1,11 @@
 
+let registeredMediaButtons = [];
+
+/** Registers a media button for extensions. 'mediaTypes' filters by type eg ['audio'], null means all. 'isDefault' promotes to visible (vs More dropdown). 'showInHistory' controls whether button appears in the History panel. */
+function registerMediaButton(name, action, title = '', mediaTypes = null, isDefault = false, showInHistory = true, href = null, is_download = false, can_multi = false, multi_only = false, max_selected = null) {
+    registeredMediaButtons.push({ name, action, title, mediaTypes, isDefault, showInHistory, href, is_download, can_multi, multi_only, max_selected });
+}
+
 function listOutputHistoryFolderAndFiles(path, isRefresh, callback, depth) {
     let sortBy = localStorage.getItem('image_history_sort_by') ?? 'Name';
     let reverse = localStorage.getItem('image_history_sort_reverse') == 'true';
@@ -53,17 +60,50 @@ function listOutputHistoryFolderAndFiles(path, isRefresh, callback, depth) {
     });
 }
 
-function buttonsForImage(fullsrc, src, metadata) {
+function buttonsForImage(fullsrc, src, metadata, isCurrentImage = false) {
     let isDataImage = src.startsWith('data:');
+    let mediaType = getMediaType(src);
     buttons = [];
     if (permissions.hasPermission('user_star_images') && !isDataImage) {
+        let getMeta = (metadata) => metadata ? (JSON.parse(metadata) || {}) : {};
+        let metaParsed = getMeta(metadata);
+        let isStarred = (e) => {
+            let currentMeta = getMeta(e?.dataset?.metadata);
+            if (Object.keys(currentMeta).length == 0) {
+                currentMeta = metaParsed;
+            }
+            return currentMeta.is_starred;
+        };
         buttons.push({
-            label: (metadata && JSON.parse(metadata).is_starred) ? 'Unstar' : 'Star',
+            label: (metadata && metaParsed.is_starred) ? 'Unstar' : 'Star',
             title: 'Star or unstar this image - starred images get moved to a separate folder and highlighted.',
-            className: (metadata && JSON.parse(metadata).is_starred) ? ' star-button button-starred-image' : ' star-button',
+            className: (metadata && metaParsed.is_starred) ? ' star-button button-starred-image' : ' star-button',
             onclick: (e) => {
                 toggleStar(fullsrc, src);
             }
+        });
+        buttons.push({
+            label: 'Enable Starred',
+            title: 'Marks all selected images as starred if they are not already',
+            onclick: (e) => {
+                // TODO: Pull the reference from the event, not from register context - or register specifically as a bulk handler
+                if (!isStarred(e)) {
+                    toggleStar(fullsrc, src);
+                }
+            },
+            can_multi: true,
+            multi_only: true
+        });
+        buttons.push({
+            label: 'Disable Starred',
+            title: 'Marks all selected images as NOT starred if they are currently starred',
+            onclick: (e) => {
+                if (isStarred(e)) {
+                    toggleStar(fullsrc, src);
+                }
+            },
+            can_multi: true,
+            multi_only: true
         });
     }
     if (metadata) {
@@ -72,6 +112,16 @@ function buttonsForImage(fullsrc, src, metadata) {
             title: `Copies the raw form of the image's metadata to your clipboard (usually JSON text).`,
             onclick: (e) => {
                 copyText(metadata);
+                doNoticePopover('Copied!', 'notice-pop-green');
+            }
+        });
+    }
+    if (!isDataImage) {
+        buttons.push({
+            label: 'Copy Path',
+            title: 'Copies the relative file path of this image to your clipboard.',
+            onclick: (e) => {
+                copyText(fullsrc);
                 doNoticePopover('Copied!', 'notice-pop-green');
             }
         });
@@ -91,6 +141,7 @@ function buttonsForImage(fullsrc, src, metadata) {
         href: escapeHtmlForUrl(src),
         is_download: true
     });
+    // TODO: Multi-compat Download (create a zip?)
     if (permissions.hasPermission('user_delete_image') && !isDataImage) {
         buttons.push({
             label: 'Delete',
@@ -126,8 +177,48 @@ function buttonsForImage(fullsrc, src, metadata) {
                         removeImageBlockFromBatch(div);
                     }
                 });
-            }
+            },
+            // TODO: Only ask once for the multi-set rather than once per each
+            can_multi: true
         });
+    }
+    if (mediaType == 'image' || mediaType == 'video') {
+        buttons.push({
+            label: 'Compare',
+            title: 'Compare 2 images or 2 videos',
+            onclick: (e) => {
+                // TODO: Give browsers.js a real "run once with the full selection" bulk handler
+                let items = imageHistoryBrowser.getMultiSelectedFiles().map(f => ({ src: f.data.src, mediaType: getMediaType(f.data.src), metadata: f.data.metadata }));
+                let valid = imageCompareHelper.evaluateSelection(items);
+                if (valid.state != 'ready') {
+                    showError(valid.reason || 'Cannot compare current selection.');
+                    return;
+                }
+                if (imageCompareHelper.isShowingPair(items[0], items[1])) {
+                    return;
+                }
+                imageCompareHelper.reset();
+                imageCompareHelper.showComparison(items[0], items[1]);
+            },
+            can_multi: true,
+            multi_only: true,
+            max_selected: 2
+        });
+    }
+    for (let reg of registeredMediaButtons) {
+        if ((isCurrentImage || reg.showInHistory) && (!reg.mediaTypes || reg.mediaTypes.includes(mediaType))) {
+            buttons.push({
+                label: reg.name,
+                title: reg.title,
+                href: reg.href,
+                is_download: reg.is_download,
+                can_multi: reg.can_multi,
+                multi_only: reg.multi_only,
+                max_selected: reg.max_selected,
+                media_types: reg.mediaTypes,
+                onclick: () => reg.action(src)
+            });
+        }
     }
     return buttons;
 }
@@ -190,6 +281,7 @@ function selectOutputInHistory(image, div) {
 
 let imageHistoryBrowser = new GenPageBrowserClass('image_history', listOutputHistoryFolderAndFiles, 'imagehistorybrowser', 'Thumbnails', describeOutputFile, selectOutputInHistory,
     `<label for="image_history_sort_by">Sort:</label> <select id="image_history_sort_by"><option>Name</option><option>Date</option></select> <input type="checkbox" id="image_history_sort_reverse"> <label for="image_history_sort_reverse">Reverse</label> &emsp; <input type="checkbox" id="image_history_allow_anims" checked autocomplete="off"> <label for="image_history_allow_anims">Allow Animation</label>`);
+imageHistoryBrowser.allowMultiSelect = true;
 
 function storeImageToHistoryWithCurrentParams(img) {
     let data = getGenInput();

@@ -342,10 +342,15 @@ function setSelectionRange(el, start, end) {
     let foundStart = false;
     let charCount = 0
     let endCharCount;
+    function isSpacer(node) { return node.tagName == 'BR' || (node.parentElement?.classList?.contains('wc_line_spacer')); }
     for (let i = 0; i < textNodes.length; i++) {
         let textNode = textNodes[i];
         endCharCount = charCount + (textNode.tagName == 'BR' ? 1 : textNode.textContent.length);
         if (!foundStart && start >= charCount && (i == textNodes.length - 1 ? start <= endCharCount : start < endCharCount)) {
+            range.setStart(textNode, start - charCount);
+            foundStart = true;
+        }
+        else if (!foundStart && start >= charCount && start == endCharCount && i + 1 < textNodes.length && isSpacer(textNodes[i + 1])) {
             range.setStart(textNode, start - charCount);
             foundStart = true;
         }
@@ -464,6 +469,42 @@ function toDataURL(url, callback) {
             callback(reader.result);
         }
         reader.readAsDataURL(xhr.response);
+    };
+    xhr.open('GET', url);
+    xhr.responseType = 'blob';
+    xhr.send();
+}
+
+/** Copies the image at the given URL (http(s) or data: URL) to the clipboard as image/png. */
+function copyImageToClipboard(url) {
+    if (!navigator.clipboard) {
+        let img = document.createElement('img');
+        img.src = url;
+        img.style.position = 'absolute';
+        img.style.opacity = '0';
+        img.style.left = '-999999px';
+        let focusedElement = document.activeElement;
+        document.body.appendChild(img);
+        let range = document.createRange();
+        range.selectNode(img);
+        let sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand('copy');
+        sel.removeAllRanges();
+        document.body.removeChild(img);
+        if (focusedElement) {
+            focusedElement.focus();
+        }
+        return;
+    }
+    let xhr = new XMLHttpRequest();
+    xhr.onload = function() {
+        let blob = xhr.response;
+        if (!blob) {
+            return;
+        }
+        navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
     };
     xhr.open('GET', url);
     xhr.responseType = 'blob';
@@ -889,6 +930,9 @@ function imageToData(src, callback, resize256 = false) {
                 context.drawImage(image, 0, 0, widthFixed, heightFixed);
                 callback(canvas.toDataURL('image/jpeg'));
         };
+        image.onerror = () => {
+            callback(null);
+        };
         image.src = src;
     }
     else {
@@ -899,6 +943,9 @@ function imageToData(src, callback, resize256 = false) {
                 callback(reader.result);
             };
             reader.readAsDataURL(xhr.response);
+        };
+        xhr.onerror = () => {
+            callback(null);
         };
         xhr.open('GET', src);
         xhr.responseType = 'blob';
@@ -1067,6 +1114,17 @@ function isAudioExt(filename) {
     return false;
 }
 
+/** Returns 'video', 'audio', or 'image' based on the file source. */
+function getMediaType(src) {
+    if (isVideoExt(src)) {
+        return 'video';
+    }
+    if (isAudioExt(src)) {
+        return 'audio';
+    }
+    return 'image';
+}
+
 /** 'string.split' with a count limit, and without the stupid misbehavior of the default JS 'string.split'. */
 function splitWithTail(str, splitter, limit) {
     let parts = str.split(splitter);
@@ -1117,4 +1175,97 @@ function measureText(text, relativeDiv = null) {
     let width = div.offsetWidth;
     relativeDiv.removeChild(div);
     return width;
+}
+
+/** Unzips a gzip-compressed Uint8Array. */
+async function ungzip(gzippedBytes) {
+    gzippedBytes = gzippedBytes.slice(0, 899);
+    let ds = new DecompressionStream('gzip');
+    let writer = ds.writable.getWriter();
+    writer.write(gzippedBytes);
+    writer.close();
+    let chunks = [];
+    let reader = ds.readable.getReader();
+    while (true) {
+        let {done, value} = await reader.read();
+        if (done) {
+            break;
+        }
+        chunks.push(value);
+    }
+    return new Uint8Array(chunks.reduce((acc, chunk) => [...acc, ...chunk], []));
+}
+
+/** Trims leading spaces from a string. */
+function trimStartSpaces(text) {
+    let count = 0;
+    for (let i = 0; i < text.length; i++) {
+        if (text[i] != ' ') {
+            break;
+        }
+        count++;
+    }
+    return text.substring(count);
+}
+
+/** Trims trailing spaces from a string. */
+function trimEndSpaces(text) {
+    let count = 0;
+    for (let i = text.length - 1; i >= 0; i--) {
+        if (text[i] != ' ') {
+            break;
+        }
+        count++;
+    }
+    return text.substring(0, text.length - count);
+}
+
+/** Trims leading and trailing spaces from a string. */
+function trimSpaces(text) {
+    return trimStartSpaces(trimEndSpaces(text));
+}
+
+/** Converts basic ANSI foreground color codes in already HTML-escaped text to colored spans. */
+function ansiHtml(text) {
+    let colors = { '30': '#000000', '31': '#cd3131', '32': '#0dbc79', '33': '#e5e510', '34': '#2472c8', '35': '#bc3fbc', '36': '#11a8cd', '37': '#e5e5e5', '90': '#666666', '91': '#f14c4c', '92': '#23d18b', '93': '#f5f543', '94': '#3b8eea', '95': '#d670d6', '96': '#29b8db', '97': '#ffffff' };
+    let result = '';
+    let currentColor = null;
+    let i = 0;
+    while (i < text.length) {
+        if (text.charCodeAt(i) == 27 && text[i + 1] == '[') {
+            let j = i + 2;
+            while (j < text.length && text[j] != 'm') {
+                j++;
+            }
+            if (j < text.length) {
+                let codes = text.substring(i + 2, j).split(';');
+                let newColor = currentColor;
+                for (let code of codes) {
+                    if (code == '' || code == '0') {
+                        newColor = null;
+                    }
+                    else if (colors[code]) {
+                        newColor = colors[code];
+                    }
+                }
+                if (newColor != currentColor) {
+                    if (currentColor != null) {
+                        result += '</span>';
+                    }
+                    if (newColor != null) {
+                        result += `<span style="color:${newColor}">`;
+                    }
+                    currentColor = newColor;
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        result += text[i];
+        i++;
+    }
+    if (currentColor != null) {
+        result += '</span>';
+    }
+    return result;
 }

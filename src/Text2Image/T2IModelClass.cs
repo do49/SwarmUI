@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json.Linq;
+using Newtonsoft.Json.Linq;
 
 namespace SwarmUI.Text2Image;
 
@@ -19,6 +19,9 @@ public record class T2IModelClass
 
     /// <summary>Matcher, return true if the model x safetensors header is the given class, or false if not.</summary>
     public Func<T2IModel, JObject, bool> IsThisModelOfClass;
+
+    /// <summary>If true, this model class represents a LoRA type. This bool is just a minor performance tweak.</summary>
+    public bool IsLora;
 
     /// <summary>Get a networkable JObject for this model class.</summary>
     public JObject ToNetData()
@@ -51,6 +54,12 @@ public record class T2IModelCompatClass
     /// <summary>If true, this class group can input an image and output video. May be over-broad.</summary>
     public bool IsImage2Video = false;
 
+    /// <summary>If true, this is a model that primarily operates on audio.</summary>
+    public bool IsAudioModel = false;
+
+    /// <summary>What family of shared latent space this model works in.</summary>
+    public T2IVAEFamily VaeFamily = null;
+
     /// <summary>Get a networkable JObject for this compat class.</summary>
     public JObject ToNetData()
     {
@@ -60,7 +69,21 @@ public record class T2IModelCompatClass
             ["short_code"] = ShortCode,
             ["loras_target_text_enc"] = LorasTargetTextEnc,
             ["is_text2video"] = IsText2Video,
-            ["is_image2video"] = IsImage2Video
+            ["is_image2video"] = IsImage2Video,
+            ["is_audio_model"] = IsAudioModel,
+            ["vae_family"] = VaeFamily?.ID
         };
     }
+}
+
+public record class T2IVAEFamily
+{
+    /// <summary>ID of this model VAE family.</summary>
+    public string ID;
+
+    /// <summary>ID of the known-VAE file from common models.</summary>
+    public string KnownVaeID;
+
+    /// <summary>The ID of the relevant model compat class.</summary>
+    public string CompatClassID;
 }

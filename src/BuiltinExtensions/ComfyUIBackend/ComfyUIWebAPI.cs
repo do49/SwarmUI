@@ -1,4 +1,4 @@
-﻿using FreneticUtilities.FreneticExtensions;
+using FreneticUtilities.FreneticExtensions;
 using FreneticUtilities.FreneticToolkit;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Accounts;
@@ -38,7 +38,14 @@ public static class ComfyUIWebAPI
         Directory.CreateDirectory(Directory.GetParent(path).FullName);
         if (!string.IsNullOrWhiteSpace(image))
         {
-            image = ImageFile.FromDataString(image).ToMetadataFormat();
+            if (image == "clear")
+            {
+                image = null;
+            }
+            else
+            {
+                image = ImageFile.FromDataString(image).ToMetadataFormat();
+            }
         }
         else if (ComfyUIBackendExtension.CustomWorkflows.ContainsKey(origPath))
         {
@@ -102,14 +109,17 @@ public static class ComfyUIWebAPI
     /// <summary>API route to read a list of available Comfy custom workflows.</summary>
     public static async Task<JObject> ComfyListWorkflows(Session session)
     {
-        return new JObject() { ["workflows"] = JToken.FromObject(ComfyUIBackendExtension.CustomWorkflows.Keys.ToList()
+        return new JObject()
+        {
+            ["workflows"] = JToken.FromObject(ComfyUIBackendExtension.CustomWorkflows.Keys.ToList()
             .Select(ComfyUIBackendExtension.GetWorkflowByName).Where(w => w is not null).OrderBy(w => w.Name).Select(w => new JObject()
             {
                 ["name"] = w.Name,
                 ["image"] = w.Image ?? "/imgs/model_placeholder.jpg",
                 ["description"] = w.Description,
                 ["enable_in_simple"] = w.EnableInSimple
-            }).ToList()) };
+            }).ToList())
+        };
     }
 
     /// <summary>API route to read a delete a saved Comfy custom workflows.</summary>
@@ -163,7 +173,7 @@ public static class ComfyUIWebAPI
     /// <summary>API route to read the node types for a specific backend.</summary>
     public static async Task<JObject> ComfyGetNodeTypesForBackend(Session session, int backend)
     {
-        if (Program.Backends.T2IBackends.TryGetValue(backend, out BackendHandler.T2IBackendData data) && data.Backend is ComfyUIAPIAbstractBackend comfyBack)
+        if (Program.Backends.AllBackends.TryGetValue(backend, out BackendHandler.BackendData data) && data.AbstractBackend is ComfyUIAPIAbstractBackend comfyBack)
         {
             return new JObject() { ["node_types"] = JArray.FromObject(comfyBack.NodeTypes.ToList()) };
         }
@@ -256,7 +266,7 @@ public static class ComfyUIWebAPI
     };
 
     /// <summary>API route to create a TensorRT model.</summary>
-    public static async Task<JObject> DoTensorRTCreateWS(Session session, WebSocket ws, string model, string aspect, string aspectRange, int optBatch, int maxBatch)
+    public static async Task<JObject> DoTensorRTCreateWS(Session session, WebSocket ws, string model, string aspect, string aspectRange, int optBatch, int maxBatch, int contextLen = 75)
     {
         if (ModelsAPI.TryGetRefusalForModel(session, model, out JObject refusal))
         {
@@ -326,7 +336,7 @@ public static class ComfyUIWebAPI
                     ["batch_size_opt"] = optBatch,
                     ["height_opt"] = prefY,
                     ["width_opt"] = prefX,
-                    ["context_opt"] = 1,
+                    ["context_opt"] = contextLen / 75,
                     ["num_video_frames"] = 25
                 }
             };
@@ -350,8 +360,8 @@ public static class ComfyUIWebAPI
                     ["width_opt"] = prefX,
                     ["width_max"] = Math.Clamp(maxX, 256, 4096),
                     ["context_min"] = 1,
-                    ["context_opt"] = 1,
-                    ["context_max"] = 128,
+                    ["context_opt"] = contextLen / 75,
+                    ["context_max"] = Math.Max(contextLen / 75, 128),
                     ["num_video_frames"] = 25
                 }
             };

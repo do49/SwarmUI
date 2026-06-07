@@ -1,4 +1,4 @@
-﻿using SwarmUI.Utils;
+using SwarmUI.Utils;
 using SixLabors.ImageSharp;
 using System.IO;
 using SixLabors.ImageSharp.Metadata.Profiles.Exif;
@@ -88,9 +88,10 @@ public class ImageFile : MediaFile
         {
             return null;
         }
+        metadataText ??= GetMetadata();
         ISImage img = ToIS;
         float factor = 256f / Math.Min(img.Width, img.Height);
-        img.Mutate(i => i.Resize((int)(img.Width * factor), (int)(img.Height * factor)));
+        img = img.Clone(i => i.Resize((int)(img.Width * factor), (int)(img.Height * factor)));
         if (!string.IsNullOrWhiteSpace(metadataText))
         {
             img.Metadata.XmpProfile = null;
@@ -176,7 +177,7 @@ public class ImageFile : MediaFile
         {
             return this;
         }
-        img.Mutate(i => i.Resize(width, height));
+        img = img.Clone(i => i.Resize(width, height));
         return new Image(ISImgToPngBytes(img), Type);
     }
 
@@ -202,11 +203,11 @@ public class ImageFile : MediaFile
                 return pngMetadata;
             }
             string output = null;
-            if (img.Metadata?.ExifProfile?.TryGetValue(ExifTag.Model, out var data) ?? false)
+            if (img.Metadata?.ExifProfile?.TryGetValue(ExifTag.Model, out IExifValue<string> data) ?? false)
             {
                 output = data.Value;
             }
-            if (img.Metadata?.ExifProfile?.TryGetValue(ExifTag.UserComment, out var data2) ?? false)
+            if (img.Metadata?.ExifProfile?.TryGetValue(ExifTag.UserComment, out IExifValue<EncodedString> data2) ?? false)
             {
                 output = data2.Value.Text;
             }
@@ -282,7 +283,6 @@ public class ImageFile : MediaFile
             string actualStealthMode = stealthMetadata.ToLowerInvariant();
             ISImage32 rgbaImage = img.CloneAs<Rgba32>();
             MetadataHelper.EncodeStealthMetadata(rgbaImage, metadata, actualStealthMode, format);
-            img.Dispose();
             img = rgbaImage;
         }
         img.Metadata.XmpProfile = null;

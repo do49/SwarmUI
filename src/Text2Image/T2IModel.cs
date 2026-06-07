@@ -1,4 +1,4 @@
-﻿using FreneticUtilities.FreneticExtensions;
+using FreneticUtilities.FreneticExtensions;
 using FreneticUtilities.FreneticToolkit;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Core;
@@ -366,7 +366,7 @@ public class T2IModel(T2IModelHandler handler, string folderPath, string filePat
             Description = $"{data["description"]}",
             PreviewImage = $"{data["preview_image"]}",
             AnyBackendsHaveLoaded = (bool)data["loaded"],
-            ModelClass = T2IModelClassSorter.ModelClasses.GetValueOrDefault($"{data["architecture"]}") ?? null,
+            ModelClass = T2IModelClassSorter.ModelClasses.GetValueOrDefault($"{data["architecture"]}".ToLowerFast()) ?? null,
             StandardWidth = (int)data["standard_width"],
             StandardHeight = (int)data["standard_height"],
             IsSupportedModelType = (bool)(data?["is_supported_model_format"] ?? false)
@@ -459,6 +459,10 @@ public class T2IModel(T2IModelHandler handler, string folderPath, string filePat
     /// <summary>Get the safetensors or gguf header from a model. Return includes "__metadata__" key with metadata key:value map, other data at root.</summary>
     public static JObject GetMetadataHeaderFrom(string modelPath)
     {
+        if (!modelPath.EndsWith(".safetensors") && !modelPath.EndsWith(".sft") && !modelPath.EndsWith(".gguf"))
+        {
+            throw new SwarmReadableErrorException($"Cannot get metadata header from unsupported model file type: {modelPath.Replace('\\', '/').AfterLast('/')}");
+        }
         using FileStream file = File.OpenRead(modelPath);
         if (file.Length < 8)
         {

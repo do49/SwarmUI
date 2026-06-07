@@ -164,6 +164,20 @@ let currentPresets = [];
 
 let preset_to_edit = null;
 
+function togglePresetStar(preset) {
+    preset.data.is_starred = !preset.data.is_starred;
+    genericRequest('AddNewPreset', {
+        title: preset.data.title,
+        description: preset.data.description,
+        param_map: preset.data.param_map,
+        preview_image: preset.data.preview_image,
+        is_edit: true,
+        editing: preset.data.title,
+        is_starred: preset.data.is_starred
+    }, data => { });
+    presetBrowser.update();
+}
+
 function fixPresetParamClickables() {
     for (let param of gen_param_types) {
         doToggleEnable(`preset_input_${param.id}`);
@@ -220,6 +234,7 @@ function clearPresetView() {
 
 let createNewPresetTitle = translatable('Create New Preset');
 let editPresetTitle = translatable('Edit Preset');
+let presetOverrideMsg = translatable('Overridden by preset(s):');
 
 function create_new_preset_button() {
     clearPresetView();
@@ -272,6 +287,15 @@ function save_new_preset() {
             let selected = [...elem.selectedOptions].map(o => o.value);
             data[type.id] = selected.join(',');
         }
+        else if (type.type == "image_list") {
+            continue;
+        }
+        else if (type.type == "image" || type.type == "audio" || type.type == "video") {
+            let val = getInputVal(elem);
+            if (val && typeof val == 'string' && !val.startsWith('data:')) {
+                data[type.id] = val;
+            }
+        }
         else {
             data[type.id] = elem.value;
         }
@@ -285,6 +309,7 @@ function save_new_preset() {
         toSend['preview_image'] = preset_to_edit.preview_image;
         toSend['is_edit'] = true;
         toSend['editing'] = preset_to_edit.title;
+        toSend['is_starred'] = preset_to_edit.is_starred;
     }
     let complete = () => {
         genericRequest('AddNewPreset', toSend, data => {
@@ -343,12 +368,23 @@ function updatePresetList() {
     let view = getRequiredElementById('current_preset_list_view');
     view.innerHTML = '';
     for (let param of gen_param_types) {
-        getRequiredElementById(`input_${param.id}`).disabled = false;
+        let elem = getRequiredElementById(`input_${param.id}`);
+        elem.disabled = false;
+        let rangeSlider = document.getElementById(`input_${param.id}_rangeslider`);
+        if (rangeSlider) {
+            rangeSlider.disabled = false;
+        }
+        let container = findParentOfClass(elem, 'auto-input');
+        if (container) {
+            container.classList.remove('preset-overridden');
+            container.title = '';
+        }
         if (param.toggleable) {
             getRequiredElementById(`input_${param.id}_toggle`).disabled = false;
         }
     }
     let overrideCount = 0;
+    let paramOverrides = {};
     for (let preset of currentPresets) {
         let div = createDiv(null, 'preset-in-list');
         div.innerText = preset.title;
@@ -369,10 +405,30 @@ function updatePresetList() {
                     let elem = getRequiredElementById(`input_${param.id}`);
                     overrideCount += 1;
                     elem.disabled = true;
+                    let rangeSlider = document.getElementById(`input_${param.id}_rangeslider`);
+                    if (rangeSlider) {
+                        rangeSlider.disabled = true;
+                    }
                     if (param.toggleable) {
                         getRequiredElementById(`input_${param.id}_toggle`).disabled = true;
                     }
+                    if (!paramOverrides[param.id]) {
+                        paramOverrides[param.id] = { names: [], value: null };
+                    }
+                    paramOverrides[param.id].names.push(preset.title);
+                    paramOverrides[param.id].value = preset.param_map[key];
                 }
+            }
+        }
+    }
+    for (let paramId in paramOverrides) {
+        let elem = document.getElementById(`input_${paramId}`);
+        if (elem) {
+            let container = findParentOfClass(elem, 'auto-input');
+            if (container) {
+                container.classList.add('preset-overridden');
+                let override = paramOverrides[paramId];
+                container.title = `${presetOverrideMsg.get()} ${override.names.join(', ')}: ${override.value}`;
             }
         }
     }
@@ -478,12 +534,19 @@ function getPresetSortValue(sortBy, preset) {
     switch (sortBy) {
         case 'Name': return preset.title.substring(preset.title.lastIndexOf('/') + 1);
         case 'Path': return preset.title;
+        case 'Default': return '';
         default: return preset.title;
     }
 }
 
 /** A preset comparison function which can be used to sort presets. */
 function presetSortCompare(sortBy, a, b) {
+    if (a.is_starred && !b.is_starred) {
+        return -1;
+    }
+    if (!a.is_starred && b.is_starred) {
+        return 1;
+    }
     let valueA = getPresetSortValue(sortBy, a);
     let valueB = getPresetSortValue(sortBy, b);
     return valueA.localeCompare(valueB);
@@ -495,9 +558,7 @@ function sortPresets() {
     let reverse = localStorage.getItem('preset_list_sort_reverse') == 'true';
     let preList = allPresetsUnsorted.filter(p => p.title.toLowerCase() == "default" || p.title.toLowerCase() == "preview");
     let mainList = allPresetsUnsorted.filter(p => p.title.toLowerCase() != "default" && p.title.toLowerCase() != "preview");
-    if (sortBy != 'Default') {
-        mainList.sort((a, b) => presetSortCompare(sortBy, a, b));
-    }
+    mainList.sort((a, b) => presetSortCompare(sortBy, a, b));
     if (reverse) {
         mainList.reverse();
     }
@@ -566,6 +627,7 @@ function describePreset(preset) {
     let buttons = [
         { label: 'Toggle', onclick: () => selectPreset(preset) },
         { label: 'Direct Apply', onclick: () => applyOnePreset(preset.data) },
+        { label: preset.data.is_starred ? 'Unstar' : 'Star', onclick: () => togglePresetStar(preset) },
         { label: 'Edit Preset', onclick: () => editPreset(preset.data) },
         { label: 'Duplicate Preset', onclick: () => duplicatePreset(preset.data) },
         { label: 'Export Preset', onclick: () => exportOnePresetButton(preset.data) },
@@ -584,6 +646,9 @@ function describePreset(preset) {
     let index = name.lastIndexOf('/');
     if (index != -1) {
         name = name.substring(index + 1);
+    }
+    if (preset.data.is_starred) {
+        className += ' model-starred';
     }
     let searchable = description;
     let displayFields = new Set((getUserSetting('ui.presetlistdetailsfields', '') || 'path,description,params').split(',').map(s => cleanParamName(s)));

@@ -1,4 +1,4 @@
-﻿using SwarmUI.Utils;
+using SwarmUI.Utils;
 using SwarmUI.Core;
 using System.Collections.Concurrent;
 using LiteDB;
@@ -8,6 +8,8 @@ using FreneticUtilities.FreneticExtensions;
 using FreneticUtilities.FreneticDataSyntax;
 using Microsoft.AspNetCore.Cryptography.KeyDerivation;
 using System.IO;
+using Newtonsoft.Json.Linq;
+using System.Web;
 
 namespace SwarmUI.Accounts;
 
@@ -53,10 +55,28 @@ public class SessionHandler
     /// <summary>Internal database (login sessions).</summary>
     public ILiteCollection<LoginSession> LoginSessions;
 
+    /// <summary>Simple lookup helper for OAuth email to user ID mapping.</summary>
+    public class UserOAuthLookup
+    {
+        [BsonId]
+        public string OAuthEmail { get; set; }
+
+        public string UserID { get; set; }
+    }
+
+    /// <summary>Internal database (OAuth lookups).</summary>
+    public ILiteCollection<UserOAuthLookup> UserOAuthLookupDB;
+
     /// <summary>Internal database access locker.</summary>
     public LockObject DBLock = new();
 
     public User GenericSharedUser;
+
+    /// <summary>A few words blocked from being exact usernames of new registrations to reduce likelihood of confusion with core name overlaps.</summary>
+    public static HashSet<string> ReservedUsernames = ["shared", "local", "admin", "owner", "moderator", "user", "users", "poweruser", "guest", "guests", "registered", "login", "account", "system", "root", "role", "roles", "tracked", "permission", "permissions"];
+
+    /// <summary>Matcher for chars allowed in a username.</summary>
+    public static AsciiMatcher UsernameValidator = new(AsciiMatcher.BothCaseLetters + AsciiMatcher.Digits + "_");
 
     /// <summary>Saves persistent data to file.</summary>
     public void Save()
@@ -161,6 +181,8 @@ public class SessionHandler
 
         public string OriginUserAgent { get; set; }
 
+        public long CreatedUnixTime { get; set; }
+
         public long LastActiveUnixTime { get; set; }
 
         public string ValidationHash { get; set; }
@@ -215,6 +237,7 @@ public class SessionHandler
         T2IPresets = Database.GetCollection<T2IPreset>("t2i_presets");
         GenericData = Database.GetCollection<GenericDataStore>("generic_data");
         LoginSessions = Database.GetCollection<LoginSession>("login_sessions");
+        UserOAuthLookupDB = Database.GetCollection<UserOAuthLookup>("user_oauth_lookup");
         FDSSection rolesData = new();
         try
         {
@@ -289,7 +312,14 @@ public class SessionHandler
         GenericSharedUser = GetUser("__shared");
         Utilities.RunCheckedTask(async () =>
         {
-            await Task.Delay(TimeSpan.FromSeconds(10), Program.GlobalProgramCancel);
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(10), Program.GlobalProgramCancel);
+            }
+            catch (TaskCanceledException)
+            {
+                return;
+            }
             CleanOldSessions();
         });
     }
@@ -313,7 +343,7 @@ public class SessionHandler
         }
     }
 
-    public Session CreateSession(string source, string userId = null)
+    public Session CreateSession(string source, string userId = null, bool persist = true)
     {
         if (HasShutdown)
         {
@@ -337,7 +367,7 @@ public class SessionHandler
             if (Sessions.TryAdd(sess.ID, sess))
             {
                 sess.User.CurrentSessions[sess.ID] = sess;
-                if (!Program.NoPersist)
+                if (!Program.NoPersist && persist)
                 {
                     lock (DBLock)
                     {
@@ -405,6 +435,30 @@ public class SessionHandler
         }
     }
 
+    /// <summary>Create a new user account. Returns null if the name already exists. Does not do its own input validation.</summary>
+    public User RegisterUser(string name, string password, string role, bool isAdmin)
+    {
+        string cleaned = UsernameValidator.TrimToMatches(name).ToLowerFast();
+        lock (DBLock)
+        {
+            User existing = GetUser(cleaned, false);
+            if (existing is not null)
+            {
+                return null;
+            }
+            User.DatabaseEntry userData = new() { ID = cleaned, RawSettings = "\n" };
+            User user = new(Program.Sessions, userData);
+            user.Settings.Roles = [role];
+            user.Settings.TrySetFieldModified(nameof(User.Settings.Roles), true);
+            user.Data.PasswordHashed = string.IsNullOrWhiteSpace(password) ? "" : Utilities.HashPassword(user.UserID, password);
+            user.Data.IsPasswordSetByAdmin = isAdmin;
+            user.BuildRoles();
+            user.Save();
+            Users.TryAdd(cleaned, user);
+            return user;
+        }
+    }
+
     /// <summary>Tries to get the session for an id.</summary>
     /// <returns><see cref="true"/> if found, otherwise <see cref="false"/>.</returns>
     public bool TryGetSession(string id, out Session session)
@@ -443,7 +497,7 @@ public class SessionHandler
                 if (Sessions.TryAdd(session.ID, session))
                 {
                     session.User.CurrentSessions[session.ID] = session;
-                    if (!Program.NoPersist)
+                    if (!Program.NoPersist && session.Persist)
                     {
                         SessionDatabase.Upsert(session.MakeDBEntry());
                     }
@@ -465,6 +519,10 @@ public class SessionHandler
             foreach (Session userSess in user.CurrentSessions.Values.ToArray())
             {
                 RemoveSession(userSess);
+            }
+            if (!string.IsNullOrWhiteSpace(user.Data.OAuthEmail))
+            {
+                UserOAuthLookupDB.Delete(user.Data.OAuthEmail);
             }
             T2IPresets.DeleteMany(b => b.ID.StartsWith(prefix));
             GenericData.DeleteMany(b => b.ID.StartsWith(prefix));
@@ -492,5 +550,48 @@ public class SessionHandler
             Database.Dispose();
         }
         Logs.Info("Session handler is shut down.");
+    }
+
+    public ConcurrentDictionary<string, string> TempAuths = []; // TODO: Autoclean this over time
+
+    public async Task<(bool, string)> CheckOAuth(string credential)
+    {
+        string response = await Utilities.UtilWebClient.GetStringAsync($"https://oauth2.googleapis.com/tokeninfo?id_token={HttpUtility.UrlEncode(credential)}");
+        JObject credentialObj = response.ParseToJson();
+        if (!credentialObj.TryGetValue("email", out JToken emailToken) || !credentialObj.TryGetValue("aud", out JToken audToken))
+        {
+            Logs.Warning("Google OAuth Verify: Invalid credential object");
+            return (false, null);
+        }
+        string email = $"{emailToken}";
+        string aud = $"{audToken}";
+        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(aud))
+        {
+            Logs.Warning("Google OAuth Verify: Missing email or aud");
+            return (false, null);
+        }
+        if (aud != Program.ServerSettings.UserAuthorization.OAuth.GoogleOAuthClientId)
+        {
+            Logs.Warning("Google OAuth Verify: Invalid aud");
+            return (false, null);
+        }
+        string allowedDomains = Program.ServerSettings.UserAuthorization.OAuth.OAuthAllowedDomains;
+        if (!string.IsNullOrWhiteSpace(allowedDomains))
+        {
+            string domain = email.Split('@')[1];
+            if (!allowedDomains.Split(',').Select(x => x.Trim()).Contains(domain))
+            {
+                Logs.Warning($"Google OAuth Verify: Email domain '{domain}' not allowed");
+                return (false, null);
+            }
+        }
+        UserOAuthLookup userData = UserOAuthLookupDB.FindById(email);
+        if (userData is not null)
+        {
+            return (true, userData.UserID);
+        }
+        string cypherText = Utilities.SecureRandomHex(32);
+        TempAuths[cypherText] = email;
+        return (false, cypherText);
     }
 }

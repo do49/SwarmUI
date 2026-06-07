@@ -1,4 +1,4 @@
-﻿using FreneticUtilities.FreneticExtensions;
+using FreneticUtilities.FreneticExtensions;
 using FreneticUtilities.FreneticToolkit;
 using Microsoft.AspNetCore.Http;
 using Newtonsoft.Json;
@@ -96,7 +96,7 @@ public static class Utilities
                 return;
             }
         }
-        if (Program.Backends.T2IBackendRequests.Any() || Program.Backends.QueuedRequests > 0 || Program.Backends.T2IBackends.Values.Any(b => b.CheckIsInUseAtAll))
+        if (Program.Backends.T2IBackendRequests.Any() || Program.Backends.QueuedRequests > 0 || Program.Backends.AllBackends.Values.Any(b => b.CheckIsInUseAtAll))
         {
             return;
         }
@@ -403,7 +403,7 @@ public static class Utilities
         return JObject.FromObject(obj.Properties().OrderBy(p => sort(p.Name)).ToDictionary(p => p.Name, p => p.Value));
     }
 
-    /// <summary>(Experimental) aggressively simply low-mem ToString for JSON data. Dense, spaceless, unformatted.</summary>
+    /// <summary>Aggressively simple low-mem ToString for JSON data. Dense, spaceless, unformatted.</summary>
     public static void ToStringFast(this JToken jval, StringBuilder builder)
     {
         if (jval is JObject jobj)
@@ -466,20 +466,27 @@ public static class Utilities
 
     public static async Task YieldJsonOutput(this HttpContext context, WebSocket socket, int status, JObject obj)
     {
-        if (socket != null)
+        try
         {
-            await socket.SendJson(obj, TimeSpan.FromMinutes(1));
-            using CancellationTokenSource cancel = TimedCancel(TimeSpan.FromMinutes(1));
-            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, cancel.Token);
-            return;
+            if (socket is not null)
+            {
+                await socket.SendJson(obj, TimeSpan.FromMinutes(1));
+                using CancellationTokenSource cancel = TimedCancel(TimeSpan.FromMinutes(1));
+                await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, cancel.Token);
+                return;
+            }
+            byte[] resp = JsonToByteArray(obj);
+            context.Response.ContentType = "application/json";
+            context.Response.StatusCode = status;
+            context.Response.ContentLength = resp.Length;
+            context.Response.Headers.CacheControl = "no-store";
+            await context.Response.BodyWriter.WriteAsync(resp, Program.GlobalProgramCancel);
+            await context.Response.CompleteAsync();
         }
-        byte[] resp = JsonToByteArray(obj);
-        context.Response.ContentType = "application/json";
-        context.Response.StatusCode = status;
-        context.Response.ContentLength = resp.Length;
-        context.Response.Headers.CacheControl = "no-store";
-        await context.Response.BodyWriter.WriteAsync(resp, Program.GlobalProgramCancel);
-        await context.Response.CompleteAsync();
+        catch (Exception ex)
+        {
+            Logs.Error($"Failing while yielding JSON output: {ex.ReadableString()}");
+        }
     }
 
     public static JObject ErrorObj(string message, string error_id)
@@ -1078,7 +1085,7 @@ public static class Utilities
         {
             IPHostEntry host = Dns.GetHostEntry(Dns.GetHostName());
             List<string> result = [];
-            foreach (var ip in host.AddressList)
+            foreach (IPAddress ip in host.AddressList)
             {
                 if (ip.AddressFamily == AddressFamily.InterNetwork && !$"{ip}".EndsWith(".1"))
                 {

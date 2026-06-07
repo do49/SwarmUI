@@ -11,6 +11,9 @@ Properties/
 .aspnet/
 .local/
 
+# So you can customize build if you need to
+Directory.Build.props
+
 # This project
 /Output
 /Data
@@ -22,6 +25,7 @@ tmp/
 custom-launch-docker.sh
 dotnet-install.sh
 docker-compose.yml
+.env
 
 # Python
 __pycache__/

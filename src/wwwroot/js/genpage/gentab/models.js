@@ -7,6 +7,7 @@ class ModelCompatClass {
         this.isText2Video = data.is_text2video;
         this.isImage2Video = data.is_image2video;
         this.lorasTargetTextEnc = data.loras_target_text_enc;
+        this.isAudioModel = data.is_audio_model;
     }
 }
 
@@ -37,7 +38,7 @@ class Model {
 
     /** Returns the 'data-cleanname' for use in a dropdown. */
     cleanDropdown() {
-        return `${escapeHtmlNoBr(this.cleanName)} <span class="model-short-code">${this.modelClass?.compatClass?.shortCode}</span>`;
+        return `${escapeHtmlNoBr(this.cleanName)} <span class="model-short-code">${this.modelClass?.compatClass?.shortCode ?? ''}</span>`;
     }
 }
 
@@ -123,11 +124,6 @@ let modelsHelpers = new ModelsHelpers();
 //////////// TODO: Merge all the below into the class above (or multiple separate classes)
 
 let models = {};
-let cur_model = null;
-let curModelWidth = 0, curModelHeight = 0;
-let curModelArch = '';
-let curModelCompatClass = '';
-let curModelSpecialFormat = '';
 let curModelMenuModel = null;
 let curModelMenuBrowser = null;
 let nativelySupportedModelExtensions = ["safetensors", "sft", "engine", "gguf"];
@@ -165,11 +161,17 @@ function getCivitUrlGuessFor(model) {
     }
     let civitUrl = '';
     // (Hacky but we don't have a dedicated datastore for this, just included at the top of descriptions generally)
-    let civitUrlStartIndex = model.description.indexOf('<a href="https://civitai.com/models/');
+    let civitUrlStartIndex = model.description.indexOf('<a href="https://civitai.red/models/');
+    if (civitUrlStartIndex == -1) {
+        civitUrlStartIndex = model.description.indexOf('<a href="https://civitai.com/models/');
+    }
     if (civitUrlStartIndex != -1) {
         let end = model.description.indexOf('"', civitUrlStartIndex + '<a href="'.length);
         if (end != -1) {
             civitUrl = model.description.substring(civitUrlStartIndex + '<a href="'.length, end);
+            if (civitUrl.startsWith('https://civitai.com/')) {
+                civitUrl = `https://civitai.red/${civitUrl.substring('https://civitai.com/'.length)}`;
+            }
             if (!civitUrl.includes("?modelVersionId=") || civitUrl.length > 200 || civitUrl.includes("?modelVersionId=null")) {
                 console.log(`Invalid CivitAI URL (failed sanity check): ${civitUrl}`);
                 civitUrl = '';
@@ -299,6 +301,36 @@ function editModel(model, browser) {
     }
 }
 
+function denseStringifyHeaderJson(header) {
+    let output = '{';
+    for (let key in header) {
+        let value = header[key];
+        // if keys within the sub-object are exactly 'dtype', 'shape', 'data_offsets', then special render.
+        if (typeof value == 'object' && Object.keys(value).length == 3 && value.dtype && value.shape && value.data_offsets) {
+            output += `\n    "${key}": "dtype": "${value.dtype}", "shape": ${JSON.stringify(value.shape)}, "data_offsets": ${JSON.stringify(value.data_offsets)},`;
+        }
+        else {
+            let procd = JSON.stringify({ [key]: value }, null, 4);
+            output += `\n${procd.substring(2, procd.length - 2)},`;
+        }
+    }
+    output += '\n}\n\n\n';
+    return output;
+}
+
+function viewRawHeader(model, browser) {
+    if (model == null) {
+        return;
+    }
+    genericRequest('GetModelHeaders', { 'model': model.name, 'subtype': browser.subType }, data => {
+        let header = data.headers;
+        let headerText = denseStringifyHeaderJson(header);
+        getRequiredElementById('view_raw_header_modal_content').innerText = headerText;
+        getRequiredElementById('view_raw_header_modal_title').innerText = model.name;
+        $('#view_raw_header_modal').modal('show');
+    });
+}
+
 function edit_model_load_civitai() {
     let url = getRequiredElementById('edit_model_civitai_url').value;
     let info = getRequiredElementById('edit_model_civitai_info');
@@ -325,12 +357,12 @@ function edit_model_load_civitai() {
         return;
     }
     let [id, versId] = modelDownloader.parseCivitaiUrl(url);
-    if (!id) {
+    if (!id && !versId) {
         info.innerText = 'Invalid URL.';
         return;
     }
     info.innerText = 'Loading...';
-    modelDownloader.getCivitaiMetadata(id, versId, (rawData, rawVersion, metadata, modelType, url, img, errMsg) => {
+    modelDownloader.getCivitaiMetadata(id, versId, (rawData, rawVersion, metadata, modelType, url, img, imgs, errMsg) => {
         if (!rawData) {
             info.innerText = `Failed to load metadata. ${(errMsg ?? '')}`;
             return;
@@ -401,20 +433,21 @@ function save_edit_model() {
 }
 
 function isModelArchCorrect(model) {
-    if (model.compat_class && curModelCompatClass) {
+    let curCompat = currentModelHelper.curCompatClass;
+    if (model.compat_class && curCompat) {
         let slash = model.architecture.indexOf('/');
         if (slash != -1) { // Base models are excluded
             // VAEs have more mixed intercompat
-            if (model.architecture.endsWith('/vae') && model.compat_class.startsWith('stable-diffusion-v3') && curModelCompatClass.startsWith('stable-diffusion-v3')) {
+            if (model.architecture.endsWith('/vae') && model.compat_class.startsWith('stable-diffusion-v3') && curCompat.startsWith('stable-diffusion-v3')) {
                 return true;
             }
-            if (model.architecture.endsWith('/vae') && model.compat_class.startsWith('flux-1') && curModelCompatClass.startsWith('hidream-i1')) {
+            if (model.architecture.endsWith('/vae') && model.compat_class.startsWith('flux-1') && curCompat.startsWith('hidream-i1')) {
                 return true;
             }
-            if (model.architecture.endsWith('/lora') && model.compat_class.startsWith('flux-1') && curModelCompatClass.startsWith('chroma')) {
+            if (model.architecture.endsWith('/lora') && model.compat_class.startsWith('flux-1') && curCompat.startsWith('chroma')) {
                 return true;
             }
-            return model.compat_class == curModelCompatClass;
+            return model.compat_class == curCompat;
         }
     }
     return true;
@@ -614,8 +647,8 @@ class ModelBrowserWrapper {
         }
         if (this.subType == 'Stable-Diffusion' && model.data.local) {
             let buttonLoad = () => {
-                directSetModel(model.data);
-                if (doModelInstallRequiredCheck()) {
+                currentModelHelper.directSetModel(model.data);
+                if (currentModelHelper.doModelInstallRequiredCheck()) {
                     return;
                 }
                 makeWSRequestT2I('SelectModelWS', {'model': model.data.name}, data => {
@@ -667,9 +700,9 @@ class ModelBrowserWrapper {
         }
         else if (this.subType == 'Embedding') {
             buttons = [
-                { label: 'Add To Prompt', onclick: () => embedAddToPrompt(model.data, 'alt_prompt_textbox') },
-                { label: 'Add To Negative', onclick: () => embedAddToPrompt(model.data, 'alt_negativeprompt_textbox') },
-                { label: 'Remove All Usages', onclick: () => { embedClearFromPrompt(model.data, 'alt_prompt_textbox'); embedClearFromPrompt(model.data, 'alt_negativeprompt_textbox'); } }
+                { label: 'Add To Prompt', onclick: () => embedAddToPrompt(model.data, 'alt_prompt_textbox'), can_multi: true },
+                { label: 'Add To Negative', onclick: () => embedAddToPrompt(model.data, 'alt_negativeprompt_textbox'), can_multi: true },
+                { label: 'Remove All Usages', onclick: () => { embedClearFromPrompt(model.data, 'alt_prompt_textbox'); embedClearFromPrompt(model.data, 'alt_negativeprompt_textbox'); }, can_multi: true }
             ];
         }
         else if (this.subType == 'LoRA') {
@@ -681,7 +714,7 @@ class ModelBrowserWrapper {
                 }
                 promptBox.value += ` <lora:${name}>`;
                 triggerChangeFor(promptBox);
-            }}];
+            }, can_multi: true }];
         }
         let isStarred = this.isStarred(model.data.name);
         let starButton = { label: isStarred ? 'Unstar' : 'Star', onclick: () => { this.toggleStar(model.data.name); } };
@@ -692,7 +725,7 @@ class ModelBrowserWrapper {
             buttons = [starButton];
             if (permissions.hasPermission('edit_wildcards')) {
                 buttons.push({ label: 'Edit Wildcard', onclick: () => wildcardHelpers.editWildcard(model.data) });
-                buttons.push({ label: 'Duplicate Wildcard', onclick: () => wildcardHelpers.duplicateWildcard(model.data) });
+                buttons.push({ label: 'Duplicate Wildcard', onclick: () => wildcardHelpers.duplicateWildcard(model.data), can_multi: true });
             }
             buttons.push({ label: 'Test Wildcard', onclick: () => wildcardHelpers.testWildcard(model.data) });
             if (permissions.hasPermission('edit_wildcards')) {
@@ -702,13 +735,11 @@ class ModelBrowserWrapper {
                             wildcardsBrowser.browser.refresh();
                         });
                     }
-                } });
+                    // TODO: Only ask once for the multi-set rather than once per each
+                }, can_multi: true });
             }
             let raw = model.data.raw;
-            if (raw.length > 512) {
-                raw = raw.substring(0, 512) + '...';
-            }
-            detail_list.push(escapeHtml(raw).replaceAll('\n', '').replaceAll('<br>', ', '));
+            detail_list.push(escapeHtml(raw).trim().replaceAll('\n', '').replaceAll('<br>', '<span class="browser-details-list-entry-text-separator">, </span>'));
             description = `<span class="wildcard_title">${escapeHtml(name)}</span><br>${escapeHtml(raw)}`;
             let match = wildcardHelpers.matchWildcard(this.promptBox.value, model.data.name);
             let isSelected = match && match.length > 0;
@@ -732,8 +763,11 @@ class ModelBrowserWrapper {
                 return `<b>${label}:</b> <span>${content}</span><br>`;
             };
             let getOptLine = (label, val) => val ? getLine(label, val) : '';
+            let helperData = modelsHelpers.getDataFor(this.subType, model.data.name);
             if (this.subType == 'LoRA' || this.subType == 'Stable-Diffusion') {
-                interject += `${getLine("Resolution", `${model.data.standard_width}x${model.data.standard_height}`)}`;
+                if (!helperData?.modelClass?.compatClass?.isAudioModel) {
+                    interject += `${getLine("Resolution", `${model.data.standard_width}x${model.data.standard_height}`)}`;
+                }
             }
             if (!model.data.local) {
                 interject += `<b>(This model is only available on some backends.)</b><br>`;
@@ -753,9 +787,10 @@ class ModelBrowserWrapper {
             detail_list.push(cleanForDetails(model.data.title), cleanForDetails(model.data.class), cleanForDetails(model.data.usage_hint ?? model.data.trigger_phrase), cleanForDetails(model.data.description));
             if (model.data.local && permissions.hasPermission('edit_model_metadata')) {
                 buttons.push({ label: 'Edit Metadata', onclick: () => editModel(model.data, this) });
+                buttons.push({ label: 'View Raw Header', onclick: () => viewRawHeader(model.data, this) });
             }
             if (model.data.local && permissions.hasPermission('delete_models')) {
-                buttons.push({ label: 'Delete Model', onclick: () => deleteModel(model.data, this) });
+                buttons.push({ label: 'Delete Model', onclick: () => deleteModel(model.data, this), can_multi: true });
             }
             if (model.data.local && permissions.hasPermission('delete_models')) {
                 buttons.push({ label: 'Rename Model', onclick: () => renameModel(model.data, this) });
@@ -880,11 +915,11 @@ class ModelBrowserWrapper {
     }
 }
 
-let sdModelBrowser = new ModelBrowserWrapper('Stable-Diffusion', ['', 'inpaint', 'tensorrt', 'depth', 'canny', 'kontext'], 'model_list', 'modelbrowser', (model) => { directSetModel(model.data); });
+let sdModelBrowser = new ModelBrowserWrapper('Stable-Diffusion', ['', 'inpaint', 'tensorrt', 'depth', 'canny', 'kontext'], 'model_list', 'modelbrowser', (model) => { currentModelHelper.directSetModel(model.data); });
 let sdVAEBrowser = new ModelBrowserWrapper('VAE', ['vae'], 'vae_list', 'sdvaebrowser', (vae) => { directSetVae(vae.data); });
 let sdLoraBrowser = new ModelBrowserWrapper('LoRA', ['lora', 'lora-depth', 'lora-canny'], 'lora_list', 'sdlorabrowser', (lora) => { loraHelper.selectLora(lora.data); });
 let sdEmbedBrowser = new ModelBrowserWrapper('Embedding', ['embedding', 'textual-inversion'], 'embedding_list', 'sdembedbrowser', (embed) => { selectEmbedding(embed.data); });
-let sdControlnetBrowser = new ModelBrowserWrapper('ControlNet', ['controlnet', 'control-lora', 'controlnet-alimamainpaint'], 'controlnet_list', 'sdcontrolnetbrowser', (controlnet) => { setControlNet(controlnet.data); });
+let sdControlnetBrowser = new ModelBrowserWrapper('ControlNet', ['controlnet', 'control-lora', 'control-diffpatch', 'controlnet-alimamainpaint'], 'controlnet_list', 'sdcontrolnetbrowser', (controlnet) => { setControlNet(controlnet.data); });
 let wildcardsBrowser = new ModelBrowserWrapper('Wildcards', [], 'wildcard_list', 'wildcardsbrowser', (wildcard) => { wildcardHelpers.selectWildcard(wildcard.data); }, `<button id="wildcards_list_create_new_button" class="refresh-button" onclick="wildcardHelpers.createNewWildcardButton()">Create New Wildcard</button>`);
 
 let allModelBrowsers = [sdModelBrowser, sdVAEBrowser, sdLoraBrowser, sdEmbedBrowser, sdControlnetBrowser, wildcardsBrowser];
@@ -972,71 +1007,6 @@ function directSetVae(vae) {
     doToggleEnable('input_vae');
 }
 
-function directSetModel(model) {
-    if (!model) {
-        return;
-    }
-    let priorModel = getRequiredElementById('current_model').value;
-    if (priorModel) {
-        modelPresetLinkManager.removePresetsFrom('Stable-Diffusion', priorModel);
-    }
-    let modelName = null;
-    if (model.name) {
-		modelName = model.name;
-        let clean = cleanModelName(model.name);
-        forceSetDropdownValue('input_model', clean);
-        forceSetDropdownValue('current_model', clean);
-        setCookie('selected_model', `${clean},${model.standard_width},${model.standard_height},${model.architecture},${model.compat_class},${model.special_format}`, 90);
-        curModelWidth = model.standard_width;
-        curModelHeight = model.standard_height;
-        curModelArch = model.architecture;
-        curModelCompatClass = model.compat_class;
-        curModelSpecialFormat = model.special_format;
-    }
-    else if (model.includes(',')) {
-        let [name, width, height, arch, compatClass, specialFormat] = model.split(',');
-        forceSetDropdownValue('input_model', name);
-        forceSetDropdownValue('current_model', name);
-        setCookie('selected_model', `${name},${width},${height},${arch},${compatClass},${specialFormat}`, 90);
-        curModelWidth = parseInt(width);
-        curModelHeight = parseInt(height);
-        curModelArch = arch;
-        curModelCompatClass = compatClass;
-        curModelSpecialFormat = specialFormat;
-        modelName = name;
-    }
-    reviseBackendFeatureSet();
-    modelPresetLinkManager.addPresetsFrom('Stable-Diffusion', modelName);
-    getRequiredElementById('input_model').dispatchEvent(new Event('change'));
-    let aspect = document.getElementById('input_aspectratio');
-    if (aspect) {
-        aspect.dispatchEvent(new Event('change'));
-    }
-    sdModelBrowser.rebuildSelectedClasses();
-    for (let browser of subModelBrowsers) {
-        browser.browser.update();
-    }
-}
-
-function setCurrentModel(callback) {
-    let currentModel = getRequiredElementById('current_model');
-    if (currentModel.value == '') {
-        genericRequest('ListLoadedModels', {}, data => {
-            if (data.models.length > 0) {
-                directSetModel(data.models[0]);
-            }
-            if (callback) {
-                callback();
-            }
-        });
-    }
-    else {
-        if (callback) {
-            callback();
-        }
-    }
-}
-
 function showTrtMenu(model) {
     if (!currentBackendFeatureSet.includes('tensorrt')) {
         getRequiredElementById('tensorrt_mustinstall').style.display = '';
@@ -1066,6 +1036,7 @@ function trt_modal_create() {
     let rangeSelect = getRequiredElementById('tensorrt_aspect_range');
     let batchSize = getRequiredElementById('tensorrt_batch_size');
     let maxBatch = getRequiredElementById('tensorrt_max_batch_size');
+    let contextLen = getRequiredElementById('tensorrt_context');
     let createButton = getRequiredElementById('trt_create_button');
     let resultBox = getRequiredElementById('tensorrt_create_result_box');
     let data = {
@@ -1073,7 +1044,8 @@ function trt_modal_create() {
         'aspect': aspectSelect.value,
         'aspectRange': rangeSelect.value,
         'optBatch': batchSize.value,
-        'maxBatch': maxBatch.value
+        'maxBatch': maxBatch.value,
+        'contextLen': contextLen.value
     };
     createButton.disabled = true;
     resultBox.innerText = 'Creating TensorRT engine, please wait...';
@@ -1091,48 +1063,146 @@ function trt_modal_create() {
     });
 }
 
-let noModelChangeDup = false;
+/** Helper class that manages the state of the currently selected model. */
+class CurrentModelHelper {
+    constructor() {
+        this.antiDup = false;
+        this.modelSelector = getRequiredElementById('current_model');
+        this.curModel = null;
+        this.curArch = null;
+        this.curCompatClass = null;
+        this.curSpecialFormat = null;
+        this.curWidth = null;
+        this.curHeight = null;
+        this.desiredModel = null;
+        this.modelSelector.addEventListener('change', () => this.currentModelChanged());
+    }
 
-function currentModelChanged() {
-    if (noModelChangeDup) {
-        return;
+    ensureCurrentModel(callback) {
+        if (this.modelSelector.value != '') {
+            callback?.();
+            return;
+        }
+        genericRequest('ListLoadedModels', {}, data => {
+            if (data.models.length > 0) {
+                this.directSetModel(data.models[0]);
+            }
+            callback?.();
+        });
     }
-    let name = getRequiredElementById('current_model').value;
-    if (name == '') {
-        return;
+
+    directSetModel(model) {
+        if (!model) {
+            return;
+        }
+        this.antiDup = true;
+        let priorModel = this.curModel;
+        if (priorModel) {
+            modelPresetLinkManager.removePresetsFrom('Stable-Diffusion', priorModel);
+        }
+        if (model.name) {
+            this.curModel = model.name;
+            let clean = cleanModelName(model.name);
+            forceSetDropdownValue('input_model', clean);
+            forceSetDropdownValue('current_model', clean);
+            setCookie('selected_model', `${clean},${model.standard_width},${model.standard_height},${model.architecture},${model.compat_class},${model.special_format}`, 90);
+            this.curWidth = model.standard_width;
+            this.curHeight = model.standard_height;
+            this.curArch = model.architecture;
+            this.curCompatClass = model.compat_class;
+            this.curSpecialFormat = model.special_format;
+        }
+        else if (model.includes(',')) {
+            let [name, width, height, arch, compatClass, specialFormat] = model.split(',');
+            forceSetDropdownValue('input_model', name);
+            forceSetDropdownValue('current_model', name);
+            setCookie('selected_model', `${name},${width},${height},${arch},${compatClass},${specialFormat}`, 90);
+            this.curWidth = parseInt(width);
+            this.curHeight = parseInt(height);
+            this.curArch = arch;
+            this.curCompatClass = compatClass;
+            this.curSpecialFormat = specialFormat;
+            this.curModel = name;
+        }
+        reviseBackendFeatureSet();
+        modelPresetLinkManager.addPresetsFrom('Stable-Diffusion', this.curModel);
+        this.getModelParam().dispatchEvent(new Event('change'));
+        let aspect = document.getElementById('input_aspectratio');
+        if (aspect) {
+            aspect.dispatchEvent(new Event('change'));
+        }
+        sdModelBrowser.rebuildSelectedClasses();
+        for (let browser of subModelBrowsers) {
+            if (browser.subType != 'Stable-Diffusion') {
+                browser.browser.lightRefresh();
+            }
+        }
+        this.antiDup = false;
     }
-    genericRequest('DescribeModel', {'modelName': name}, data => {
-        noModelChangeDup = true;
-        directSetModel(data.model);
-        noModelChangeDup = false;
-    });
+
+    updateDesiredModel(callback) {
+        if (!this.desiredModel || this.desiredModel == this.curModel) {
+            callback?.();
+            return;
+        }
+        let name = this.desiredModel;
+        genericRequest('DescribeModel', {'modelName': this.desiredModel}, data => {
+            if (name != this.desiredModel) {
+                callback?.();
+                return;
+            }
+            this.directSetModel(data.model);
+            callback?.();
+        }, 0, err => {
+            this.antiDup = false;
+            console.error('updateDesiredModel', name, err);
+            callback?.();
+        });
+    }
+
+    getModelParam() {
+        return document.getElementById('input_model');
+    }
+
+    currentModelChanged() {
+        if (this.antiDup) {
+            return;
+        }
+        let name = this.modelSelector.value;
+        if (name == '') {
+            return;
+        }
+        this.desiredModel = name;
+        this.updateDesiredModel();
+    }
+
+    doModelInstallRequiredCheck() {
+        if ((this.curSpecialFormat == 'bnb_nf4' || this.curSpecialFormat == 'bnb_fp4') && !currentBackendFeatureSet.includes('bnb_nf4') && !localStorage.getItem('hide_bnb_nf4_check')) {
+            $('#bnb_nf4_installer').modal('show');
+            return true;
+        }
+        if ((this.curSpecialFormat == 'nunchaku' || this.curSpecialFormat == 'nunchaku-fp4') && !currentBackendFeatureSet.includes('nunchaku') && !localStorage.getItem('hide_nunchaku_check')) {
+            $('#nunchaku_installer').modal('show');
+            return true;
+        }
+        let imageVidToggler = document.getElementById('input_group_content_imagetovideo_toggle');
+        let isImageVidToggled = imageVidToggler && imageVidToggler.checked;
+        let videoModel = isImageVidToggled ? document.getElementById('input_videomodel')?.value : '';
+        if ((this.curSpecialFormat == 'gguf' || videoModel.endsWith('.gguf')) && !currentBackendFeatureSet.includes('gguf') && !localStorage.getItem('hide_gguf_check')) {
+            $('#gguf_installer').modal('show');
+            return true;
+        }
+        if (this.curCompatClass == 'pixart-ms-sigma-xl-2' && !currentBackendFeatureSet.includes('extramodelspixart') && !localStorage.getItem('hide_extramodels_check')) {
+            $('#extramodels_installer').modal('show');
+            return true;
+        }
+        if (this.curCompatClass == 'nvidia-sana-1600' && !currentBackendFeatureSet.includes('extramodelssana') && !localStorage.getItem('hide_extramodels_check')) {
+            $('#extramodels_installer').modal('show');
+            return true;
+        }
+        return false;
+    }
 }
 
-function doModelInstallRequiredCheck() {
-    if ((curModelSpecialFormat == 'bnb_nf4' || curModelSpecialFormat == 'bnb_fp4') && !currentBackendFeatureSet.includes('bnb_nf4') && !localStorage.getItem('hide_bnb_nf4_check')) {
-        $('#bnb_nf4_installer').modal('show');
-        return true;
-    }
-    if ((curModelSpecialFormat == 'nunchaku' || curModelSpecialFormat == 'nunchaku-fp4') && !currentBackendFeatureSet.includes('nunchaku') && !localStorage.getItem('hide_nunchaku_check')) {
-        $('#nunchaku_installer').modal('show');
-        return true;
-    }
-    let imageVidToggler = document.getElementById('input_group_content_imagetovideo_toggle');
-    let isImageVidToggled = imageVidToggler && imageVidToggler.checked;
-    let videoModel = isImageVidToggled ? document.getElementById('input_videomodel')?.value : '';
-    if ((curModelSpecialFormat == 'gguf' || videoModel.endsWith('.gguf')) && !currentBackendFeatureSet.includes('gguf') && !localStorage.getItem('hide_gguf_check')) {
-        $('#gguf_installer').modal('show');
-        return true;
-    }
-    if (curModelCompatClass == 'pixart-ms-sigma-xl-2' && !currentBackendFeatureSet.includes('extramodelspixart') && !localStorage.getItem('hide_extramodels_check')) {
-        $('#extramodels_installer').modal('show');
-        return true;
-    }
-    if (curModelCompatClass == 'nvidia-sana-1600' && !currentBackendFeatureSet.includes('extramodelssana') && !localStorage.getItem('hide_extramodels_check')) {
-        $('#extramodels_installer').modal('show');
-        return true;
-    }
-    return false;
-}
-
-getRequiredElementById('current_model').addEventListener('change', currentModelChanged);
+/** Helper instance that manages the state of the currently selected model. */
+let currentModelHelper = new CurrentModelHelper();
