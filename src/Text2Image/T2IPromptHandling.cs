@@ -731,8 +731,8 @@ public class T2IPromptHandling
         {
             // Prompt change detection logic
             string lastPromptKey = "wildcardseq_last_full_prompt";
-            string currentActualPrompt = context.Input.Get(T2IParamTypes.Prompt) ?? "";
-            string currentActualNegativePrompt = context.Input.Get(T2IParamTypes.NegativePrompt) ?? "";
+            string currentActualPrompt = context.Input.ExtraMeta.TryGetValue("original_prompt", out object op) ? op.ToString() : (context.Input.Get(T2IParamTypes.Prompt) ?? "");
+            string currentActualNegativePrompt = context.Input.ExtraMeta.TryGetValue("original_negativeprompt", out object onp) ? onp.ToString() : (context.Input.Get(T2IParamTypes.NegativePrompt) ?? "");
             string currentFullPrompt = $"P:{currentActualPrompt}|N:{currentActualNegativePrompt}";
             bool promptChanged = false;
             if (context.Input.SourceSession.SessionData.TryGetValue(lastPromptKey, out object prevPromptObj) && prevPromptObj is string previousPrompt)

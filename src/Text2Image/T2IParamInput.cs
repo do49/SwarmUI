@@ -494,6 +494,8 @@ public class T2IParamInput
     /// <summary>Special utility to process prompt inputs before the request is executed (to parse wildcards, embeddings, etc).</summary>
     public void PreparsePromptLikes()
     {
+        ExtraMeta["original_prompt"] = Get(T2IParamTypes.Prompt) ?? "";
+        ExtraMeta["original_negativeprompt"] = Get(T2IParamTypes.NegativePrompt) ?? "";
         T2IPromptHandling.PromptTagContext posContext = new() { Input = this, Param = T2IParamTypes.Prompt.Type.ID };
         InternalSet.ValuesInput["prompt"] = ProcessPromptLike(T2IParamTypes.Prompt, posContext);
         T2IPromptHandling.PromptTagContext negContext = new() { Input = this, Param = T2IParamTypes.Prompt.Type.ID, Variables = posContext.Variables, Macros = posContext.Macros };
